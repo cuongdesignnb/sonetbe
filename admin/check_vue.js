@@ -1,0 +1,18 @@
+const fs = require('fs');
+const c = fs.readFileSync('h:\\Sonet\\backend\\admin\\src\\components\\CourseLandingEditor.vue', 'utf8');
+console.log('File size:', c.length);
+console.log('Has template close:', c.includes('</template>'));
+console.log('Has script close:', c.includes('</script>'));
+console.log('Has style close:', c.includes('</style>'));
+const tOpen = (c.match(/<template/g) || []).length;
+const tClose = (c.match(/<\/template>/g) || []).length;
+console.log('template open/close:', tOpen, tClose);
+const divOpen = (c.match(/<div/g) || []).length;
+const divClose = (c.match(/<\/div>/g) || []).length;
+console.log('div open/close:', divOpen, divClose);
+const labelOpen = (c.match(/<label/g) || []).length;
+const labelClose = (c.match(/<\/label>/g) || []).length;
+console.log('label open/close:', labelOpen, labelClose);
+const buttonOpen = (c.match(/<button/g) || []).length;
+const buttonClose = (c.match(/<\/button>/g) || []).length;
+console.log('button open/close:', buttonOpen, buttonClose);

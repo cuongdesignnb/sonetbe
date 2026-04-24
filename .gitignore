@@ -1,0 +1,41 @@
+/vendor/
+/node_modules/
+/admin/node_modules/
+/admin/dist/
+/public/storage
+/storage/*.key
+/.env
+/.env.*
+!/.env.example
+/.phpunit.result.cache
+Homestead.json
+Homestead.yaml
+npm-debug.log*
+yarn-error.log*
+/.idea
+/.vscode
+
+# Local DB dumps / one-off scripts
+*.sql
+/debug_video.php
+/debug.txt
+/backfill_library_id.php
+/check_vue.js
+/fix_if.js
+/update_delete.js
+/update_inline_delete.js
+
+# Laravel specific
+/bootstrap/compiled.php
+/app/storage/
+/public/uploads/
+/storage/logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

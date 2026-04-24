@@ -1,0 +1,48 @@
+name: sonet_course_db
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: course_platform
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    ports:
+      - "33917:3306"
+    volumes:
+      - sonet_course_db_mysql_data:/var/lib/mysql
+    command: >-
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No host port binding needed
+    volumes:
+      - sonet_course_db_redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    restart: unless-stopped
+    ports:
+      - "8917:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: ""
+      PMA_ALLOW_EMPTY_PASSWORD: "1"
+    depends_on:
+      - mysql
+
+volumes:
+  sonet_course_db_mysql_data:
+  sonet_course_db_redis_data:

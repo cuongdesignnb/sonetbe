@@ -1,0 +1,687 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Services\SettingsService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+
+class AdminSettingsController extends Controller
+{
+    private function ensureAdmin(): void
+    {
+        $user = Auth::user();
+        if (!$user || !$user->isAdmin()) {
+            abort(403, 'Unauthorized');
+        }
+    }
+
+    public function index()
+    {
+        $this->ensureAdmin();
+
+        $defaults = [
+            'site.name' => 'Sonnet',
+            'site.description' => 'Nền tảng học online hàng đầu Việt Nam',
+            'site.url' => 'https://sonnet.vn',
+            'site.logo_url' => '/logo.svg',
+            'site.favicon_url' => '/favicon.svg',
+            'site.contact.email' => 'support@sonnet.vn',
+            'site.contact.phone' => '+84 123 456 789',
+            'site.contact.address' => '123 Nguyễn Huệ, Quận 1, TP. Hồ Chí Minh',
+            'site.social.facebook' => 'https://facebook.com/sonnetvn',
+            'site.social.youtube' => 'https://youtube.com/@sonnetvn',
+            'site.social.instagram' => 'https://instagram.com/sonnetvn',
+            'site.social.tiktok' => 'https://tiktok.com/@sonnetvn',
+            'site.social.linkedin' => 'https://linkedin.com/company/sonnetvn',
+            'site.social.twitter' => 'https://twitter.com/sonnetvn',
+            'seo.title_template' => '%s | Sonnet',
+            'seo.default_title' => 'Sonnet - Học Online Chất Lượng Cao',
+            'seo.default_description' => 'Khám phá hàng ngàn khóa học chất lượng cao từ các chuyên gia hàng đầu. Video HD, học mọi lúc mọi nơi, chứng chỉ được công nhận.',
+            'seo.keywords' => 'học online, khóa học, e-learning, sonnet, học trực tuyến',
+            'home.hero.badge' => 'Nền tảng học online #1 Việt Nam',
+            'home.hero.title_prefix' => 'Mở khóa',
+            'home.hero.title_highlight' => 'tiềm năng',
+            'home.hero.title_suffix' => 'của bạn',
+            'home.hero.subtitle' => 'Khám phá hàng ngàn khóa học chất lượng cao từ các chuyên gia hàng đầu. Video HD, học mọi lúc mọi nơi, chứng chỉ được công nhận.',
+            'home.hero.primary_cta' => 'Bắt đầu học miễn phí',
+            'home.hero.secondary_cta' => 'Xem giới thiệu',
+            'home.stats.courses' => 1000,
+            'home.stats.students' => 50000,
+            'home.stats.certificates' => 25000,
+            'home.stats.countries' => 40,
+            'home.stats.rating' => 4.9,
+            'home.stats.label_students' => 'Học viên',
+            'home.stats.label_courses' => 'Khóa học',
+            'home.stats.label_certificates' => 'Ebooks',
+            'home.stats.label_countries' => 'Sách xuất bản',
+            'home.cta.title_prefix' => 'Sẵn sàng nâng cấp',
+            'home.cta.title_highlight' => 'kỹ năng',
+            'home.cta.title_suffix' => 'của bạn?',
+            'home.cta.subtitle' => 'Tham gia cùng hơn 50,000+ học viên đã thay đổi sự nghiệp của họ thông qua các khóa học chất lượng cao của chúng tôi.',
+            'home.cta.primary_cta' => 'Đăng ký miễn phí',
+            'home.cta.secondary_cta' => 'Xem khóa học',
+            'home.featured.title' => 'Khóa học, Sách & Ebooks nổi bật',
+            'home.featured.subtitle' => 'Được thiết kế bởi các chuyên gia hàng đầu, phù hợp cho mọi trình độ',
+            'home.featured.button_text' => 'TÌM HIỂU NGAY',
+            'home.webinar.badge' => 'Zoom Webinar',
+            'home.webinar.title' => 'Zoom Webinar miễn phí & trả phí',
+            'home.webinar.subtitle' => 'Tham gia học trực tiếp với chuyên gia',
+            'home.webinar.tab_upcoming' => 'Sắp tới',
+            'home.webinar.tab_completed' => 'Đã hoàn thành',
+            'home.webinar.button_detail' => 'Xem chi tiết',
+            'home.webinar.button_view_all' => 'Xem tất cả webinar',
+            'home.affiliate.title' => 'Chương trình Affiliate - Xây dựng nguồn thu nhập thứ 2!',
+            'home.affiliate.description' => 'Nhận hoa hồng lên đến 85% khi giới thiệu khách hàng mua khóa học',
+            'home.affiliate.button_text' => 'Tìm hiểu thêm',
+            'bunnycdn.api_key' => config('bunnycdn.api_key'),
+            'bunnycdn.storage_zone_name' => config('bunnycdn.storage_zone_name'),
+            'bunnycdn.pull_zone_url' => config('bunnycdn.pull_zone_url'),
+            'bunnycdn.video_library_id' => config('bunnycdn.video_library_id'),
+            'bunnycdn.video_api_key' => config('bunnycdn.video_api_key'),
+            'bunnycdn.stream_hostname' => config('bunnycdn.stream_hostname', 'iframe.mediadelivery.net'),
+            'bunnycdn.token_auth_key' => config('bunnycdn.token_auth_key'),
+            'bunnycdn.enable_token_auth' => (bool) config('bunnycdn.enable_token_auth', false),
+            'bunnycdn.token_ttl' => (int) config('bunnycdn.token_ttl', 3600),
+            'sepay.webhook_token' => config('sepay.webhook_token'),
+            'sepay.pattern' => config('sepay.pattern', 'SE'),
+            'sepay.webhook_url' => SettingsService::get('sepay.webhook_url', ''),
+            'sepay_gateway.bank_code' => config('sepay_gateway.bank_code'),
+            'sepay_gateway.bank_name' => '',
+            'sepay_gateway.account_number' => config('sepay_gateway.account_number'),
+            'sepay_gateway.account_name' => config('sepay_gateway.account_name'),
+            'minvoice.enabled' => (bool) config('minvoice.enabled', false),
+            'minvoice.base_url' => config('minvoice.base_url', ''),
+            'minvoice.username' => config('minvoice.username', ''),
+            'minvoice.password' => '',
+            'minvoice.branch_code' => config('minvoice.branch_code', 'VP'),
+            'minvoice.tax_code' => config('minvoice.tax_code', ''),
+            'minvoice.invoice_type' => (int) config('minvoice.invoice_type', 1),
+            'minvoice.default_invoice_series' => config('minvoice.default_invoice_series', ''),
+            'minvoice.currency_code' => config('minvoice.currency_code', 'VND'),
+            'minvoice.exchange_rate' => (float) config('minvoice.exchange_rate', 1),
+            'minvoice.payment_method_name' => config('minvoice.payment_method_name', 'Chuyển khoản'),
+            'minvoice.vat_rate' => (float) config('minvoice.vat_rate', 0),
+            'minvoice.vat_code' => (string) config('minvoice.vat_code', '0'),
+            'minvoice.unit_code' => config('minvoice.unit_code', 'Goi'),
+            'minvoice.item_code_prefix' => config('minvoice.item_code_prefix', 'SONET'),
+            'minvoice.request_timeout' => (int) config('minvoice.request_timeout', 30),
+            'minvoice.token_cache_minutes' => (int) config('minvoice.token_cache_minutes', 50),
+            'custom_code.head_scripts' => '',
+            'custom_code.body_start_scripts' => '',
+            'custom_code.body_end_scripts' => '',
+            'custom_code.custom_css' => '',
+            // Email / SMTP settings
+            'mail.mailer' => config('mail.default', 'smtp'),
+            'mail.host' => config('mail.mailers.smtp.host', ''),
+            'mail.port' => (int) config('mail.mailers.smtp.port', 587),
+            'mail.username' => config('mail.mailers.smtp.username', ''),
+            'mail.password' => '',
+            'mail.encryption' => config('mail.mailers.smtp.encryption', 'tls'),
+            'mail.from_address' => config('mail.from.address', ''),
+            'mail.from_name' => config('mail.from.name', ''),
+            // Footer settings
+            'footer.description' => 'Cung cấp các khóa học chất lượng cao với công nghệ streaming video tiên tiến.',
+            'footer.copyright_text' => '© ' . date('Y') . ' Sonnet. Tất cả quyền được bảo lưu.',
+            'footer.tagline' => 'Made with ❤ in Vietnam',
+            'footer.show_social_links' => true,
+            'footer.links' => json_encode([
+                'courses' => [
+                    ['name' => 'Lập trình Web', 'href' => '/categories/1'],
+                    ['name' => 'Mobile App', 'href' => '/categories/2'],
+                    ['name' => 'UI/UX Design', 'href' => '/categories/3'],
+                    ['name' => 'Data Science', 'href' => '/categories/4'],
+                ],
+                'support' => [
+                    ['name' => 'Trung tâm hỗ trợ', 'href' => '/support'],
+                    ['name' => 'FAQ', 'href' => '/faq'],
+                    ['name' => 'Liên hệ', 'href' => '/contact'],
+                    ['name' => 'Góp ý', 'href' => '/feedback'],
+                ],
+                'legal' => [
+                    ['name' => 'Điều khoản sử dụng', 'href' => '/terms'],
+                    ['name' => 'Chính sách bảo mật', 'href' => '/privacy'],
+                    ['name' => 'Chính sách hoàn tiền', 'href' => '/refund'],
+                ],
+            ]),
+            // About page settings
+            'about.hero.name' => 'Phan Anh Chiến',
+            'about.hero.title' => 'TikTok Marketing Expert & Founder of Sonet',
+            'about.hero.subtitle' => 'Đào tạo hơn 10,000+ học viên kiếm tiền từ TikTok',
+            'about.hero.avatar_url' => '',
+            'about.hero.cover_url' => '',
+            'about.hero.verified' => true,
+            'about.stats.followers' => '500K+',
+            'about.stats.students' => '10,000+',
+            'about.stats.courses' => '15+',
+            'about.stats.experience' => '5+ năm',
+            'about.social.tiktok' => 'https://tiktok.com/@phananhlien',
+            'about.social.youtube' => 'https://youtube.com/@phananhlien',
+            'about.social.facebook' => 'https://facebook.com/phananhlien',
+            'about.social.instagram' => 'https://instagram.com/phananhlien',
+            'about.about.headline' => 'Từ 0 follower đến Top Creator TikTok Việt Nam',
+            'about.about.bio' => '',
+            'about.about.mission' => 'Sứ mệnh của Sonet là giúp mọi người tận dụng sức mạnh của mạng xã hội để phát triển sự nghiệp và thu nhập thụ động.',
+            'about.achievements' => '[]',
+            'about.skills' => '[]',
+            'about.testimonials' => '[]',
+            'about.cta.title' => 'Sẵn sàng bắt đầu hành trình?',
+            'about.cta.subtitle' => 'Tham gia cùng 10,000+ học viên đã thành công với TikTok',
+            'about.cta.button_text' => 'Xem các khóa học',
+            'about.cta.button_url' => '/courses',
+        ];
+
+        $resolved = [];
+        foreach ($defaults as $key => $default) {
+            $resolved[$key] = SettingsService::get($key, $default);
+        }
+
+        return response()->json([
+            'settings' => [
+                'site' => [
+                    'name' => $resolved['site.name'],
+                    'description' => $resolved['site.description'],
+                    'url' => $resolved['site.url'],
+                    'logo_url' => $resolved['site.logo_url'],
+                    'favicon_url' => $resolved['site.favicon_url'],
+                    'contact' => [
+                        'email' => $resolved['site.contact.email'],
+                        'phone' => $resolved['site.contact.phone'],
+                        'address' => $resolved['site.contact.address'],
+                    ],
+                    'social' => [
+                        'facebook' => $resolved['site.social.facebook'],
+                        'youtube' => $resolved['site.social.youtube'],
+                        'instagram' => $resolved['site.social.instagram'],
+                        'tiktok' => $resolved['site.social.tiktok'],
+                        'linkedin' => $resolved['site.social.linkedin'],
+                        'twitter' => $resolved['site.social.twitter'],
+                    ],
+                ],
+                'seo' => [
+                    'title_template' => $resolved['seo.title_template'],
+                    'default_title' => $resolved['seo.default_title'],
+                    'default_description' => $resolved['seo.default_description'],
+                    'keywords' => $resolved['seo.keywords'],
+                ],
+                'home' => [
+                    'hero' => [
+                        'badge' => $resolved['home.hero.badge'],
+                        'title_prefix' => $resolved['home.hero.title_prefix'],
+                        'title_highlight' => $resolved['home.hero.title_highlight'],
+                        'title_suffix' => $resolved['home.hero.title_suffix'],
+                        'subtitle' => $resolved['home.hero.subtitle'],
+                        'primary_cta' => $resolved['home.hero.primary_cta'],
+                        'secondary_cta' => $resolved['home.hero.secondary_cta'],
+                    ],
+                    'stats' => [
+                        'courses' => (int) $resolved['home.stats.courses'],
+                        'students' => (int) $resolved['home.stats.students'],
+                        'certificates' => (int) $resolved['home.stats.certificates'],
+                        'countries' => (int) $resolved['home.stats.countries'],
+                        'rating' => (float) $resolved['home.stats.rating'],
+                        'label_students' => $resolved['home.stats.label_students'],
+                        'label_courses' => $resolved['home.stats.label_courses'],
+                        'label_certificates' => $resolved['home.stats.label_certificates'],
+                        'label_countries' => $resolved['home.stats.label_countries'],
+                    ],
+                    'cta' => [
+                        'title_prefix' => $resolved['home.cta.title_prefix'],
+                        'title_highlight' => $resolved['home.cta.title_highlight'],
+                        'title_suffix' => $resolved['home.cta.title_suffix'],
+                        'subtitle' => $resolved['home.cta.subtitle'],
+                        'primary_cta' => $resolved['home.cta.primary_cta'],
+                        'secondary_cta' => $resolved['home.cta.secondary_cta'],
+                    ],
+                    'featured' => [
+                        'title' => $resolved['home.featured.title'],
+                        'subtitle' => $resolved['home.featured.subtitle'],
+                        'button_text' => $resolved['home.featured.button_text'],
+                    ],
+                    'webinar' => [
+                        'badge' => $resolved['home.webinar.badge'],
+                        'title' => $resolved['home.webinar.title'],
+                        'subtitle' => $resolved['home.webinar.subtitle'],
+                        'tab_upcoming' => $resolved['home.webinar.tab_upcoming'],
+                        'tab_completed' => $resolved['home.webinar.tab_completed'],
+                        'button_detail' => $resolved['home.webinar.button_detail'],
+                        'button_view_all' => $resolved['home.webinar.button_view_all'],
+                    ],
+                    'affiliate' => [
+                        'title' => $resolved['home.affiliate.title'],
+                        'description' => $resolved['home.affiliate.description'],
+                        'button_text' => $resolved['home.affiliate.button_text'],
+                    ],
+                ],
+                'bunnycdn' => [
+                    'api_key' => $resolved['bunnycdn.api_key'],
+                    'storage_zone_name' => $resolved['bunnycdn.storage_zone_name'],
+                    'pull_zone_url' => $resolved['bunnycdn.pull_zone_url'],
+                    'video_library_id' => $resolved['bunnycdn.video_library_id'],
+                    'video_api_key' => $resolved['bunnycdn.video_api_key'],
+                    'stream_hostname' => $resolved['bunnycdn.stream_hostname'],
+                    'token_auth_key' => $resolved['bunnycdn.token_auth_key'],
+                    'enable_token_auth' => $resolved['bunnycdn.enable_token_auth'],
+                    'token_ttl' => $resolved['bunnycdn.token_ttl'],
+                ],
+                'sepay' => [
+                    'webhook_token' => $resolved['sepay.webhook_token'],
+                    'pattern' => $resolved['sepay.pattern'],
+                    'webhook_url' => SettingsService::get('sepay.webhook_url', ''),
+                ],
+                'sepay_gateway' => [
+                    'bank_code' => $resolved['sepay_gateway.bank_code'],
+                    'bank_name' => $resolved['sepay_gateway.bank_name'],
+                    'account_number' => $resolved['sepay_gateway.account_number'],
+                    'account_name' => $resolved['sepay_gateway.account_name'],
+                ],
+                'minvoice' => [
+                    'enabled' => (bool) $resolved['minvoice.enabled'],
+                    'base_url' => $resolved['minvoice.base_url'],
+                    'username' => $resolved['minvoice.username'],
+                    'password' => $resolved['minvoice.password'] ? '••••••••' : '',
+                    'branch_code' => $resolved['minvoice.branch_code'],
+                    'tax_code' => $resolved['minvoice.tax_code'],
+                    'invoice_type' => (int) $resolved['minvoice.invoice_type'],
+                    'default_invoice_series' => $resolved['minvoice.default_invoice_series'],
+                    'currency_code' => $resolved['minvoice.currency_code'],
+                    'exchange_rate' => (float) $resolved['minvoice.exchange_rate'],
+                    'payment_method_name' => $resolved['minvoice.payment_method_name'],
+                    'vat_rate' => (float) $resolved['minvoice.vat_rate'],
+                    'vat_code' => (string) $resolved['minvoice.vat_code'],
+                    'unit_code' => $resolved['minvoice.unit_code'],
+                    'item_code_prefix' => $resolved['minvoice.item_code_prefix'],
+                    'request_timeout' => (int) $resolved['minvoice.request_timeout'],
+                    'token_cache_minutes' => (int) $resolved['minvoice.token_cache_minutes'],
+                ],
+                'custom_code' => [
+                    'head_scripts' => $resolved['custom_code.head_scripts'],
+                    'body_start_scripts' => $resolved['custom_code.body_start_scripts'],
+                    'body_end_scripts' => $resolved['custom_code.body_end_scripts'],
+                    'custom_css' => $resolved['custom_code.custom_css'],
+                ],
+                'mail' => [
+                    'mailer' => $resolved['mail.mailer'],
+                    'host' => $resolved['mail.host'],
+                    'port' => (int) $resolved['mail.port'],
+                    'username' => $resolved['mail.username'],
+                    'password' => $resolved['mail.password'] ? '••••••••' : '',
+                    'encryption' => $resolved['mail.encryption'],
+                    'from_address' => $resolved['mail.from_address'],
+                    'from_name' => $resolved['mail.from_name'],
+                ],
+                'footer' => [
+                    'description' => $resolved['footer.description'],
+                    'copyright_text' => $resolved['footer.copyright_text'],
+                    'tagline' => $resolved['footer.tagline'],
+                    'show_social_links' => (bool) $resolved['footer.show_social_links'],
+                    'links' => $resolved['footer.links'],
+                ],
+                'about' => [
+                    'hero' => [
+                        'name' => $resolved['about.hero.name'],
+                        'title' => $resolved['about.hero.title'],
+                        'subtitle' => $resolved['about.hero.subtitle'],
+                        'avatar_url' => $resolved['about.hero.avatar_url'],
+                        'cover_url' => $resolved['about.hero.cover_url'],
+                        'verified' => (bool) $resolved['about.hero.verified'],
+                    ],
+                    'stats' => [
+                        'followers' => $resolved['about.stats.followers'],
+                        'students' => $resolved['about.stats.students'],
+                        'courses' => $resolved['about.stats.courses'],
+                        'experience' => $resolved['about.stats.experience'],
+                    ],
+                    'social' => [
+                        'tiktok' => $resolved['about.social.tiktok'],
+                        'youtube' => $resolved['about.social.youtube'],
+                        'facebook' => $resolved['about.social.facebook'],
+                        'instagram' => $resolved['about.social.instagram'],
+                    ],
+                    'about' => [
+                        'headline' => $resolved['about.about.headline'],
+                        'bio' => $resolved['about.about.bio'],
+                        'mission' => $resolved['about.about.mission'],
+                    ],
+                    'achievements' => $resolved['about.achievements'],
+                    'skills' => $resolved['about.skills'],
+                    'testimonials' => $resolved['about.testimonials'],
+                    'cta' => [
+                        'title' => $resolved['about.cta.title'],
+                        'subtitle' => $resolved['about.cta.subtitle'],
+                        'button_text' => $resolved['about.cta.button_text'],
+                        'button_url' => $resolved['about.cta.button_url'],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    public function update(Request $request)
+    {
+        $this->ensureAdmin();
+
+        $validator = Validator::make($request->all(), [
+            'site.name' => 'nullable|string|max:255',
+            'site.description' => 'nullable|string|max:1000',
+            'site.url' => 'nullable|string|max:255',
+            'site.logo_url' => 'nullable|string|max:255',
+            'site.favicon_url' => 'nullable|string|max:255',
+            'site.contact.email' => 'nullable|string|max:255',
+            'site.contact.phone' => 'nullable|string|max:50',
+            'site.contact.address' => 'nullable|string|max:255',
+            'site.social.facebook' => 'nullable|string|max:255',
+            'site.social.youtube' => 'nullable|string|max:255',
+            'site.social.instagram' => 'nullable|string|max:255',
+            'site.social.tiktok' => 'nullable|string|max:255',
+            'site.social.linkedin' => 'nullable|string|max:255',
+            'site.social.twitter' => 'nullable|string|max:255',
+            'seo.title_template' => 'nullable|string|max:255',
+            'seo.default_title' => 'nullable|string|max:255',
+            'seo.default_description' => 'nullable|string|max:1000',
+            'seo.keywords' => 'nullable|string|max:1000',
+            'home.hero.badge' => 'nullable|string|max:255',
+            'home.hero.title_prefix' => 'nullable|string|max:255',
+            'home.hero.title_highlight' => 'nullable|string|max:255',
+            'home.hero.title_suffix' => 'nullable|string|max:255',
+            'home.hero.subtitle' => 'nullable|string|max:1000',
+            'home.hero.primary_cta' => 'nullable|string|max:255',
+            'home.hero.secondary_cta' => 'nullable|string|max:255',
+            'home.stats.courses' => 'nullable|integer|min:0',
+            'home.stats.students' => 'nullable|integer|min:0',
+            'home.stats.certificates' => 'nullable|integer|min:0',
+            'home.stats.countries' => 'nullable|integer|min:0',
+            'home.stats.rating' => 'nullable|numeric|min:0|max:5',
+            'home.stats.label_students' => 'nullable|string|max:255',
+            'home.stats.label_courses' => 'nullable|string|max:255',
+            'home.stats.label_certificates' => 'nullable|string|max:255',
+            'home.stats.label_countries' => 'nullable|string|max:255',
+            'home.cta.title_prefix' => 'nullable|string|max:255',
+            'home.cta.title_highlight' => 'nullable|string|max:255',
+            'home.cta.title_suffix' => 'nullable|string|max:255',
+            'home.cta.subtitle' => 'nullable|string|max:1000',
+            'home.cta.primary_cta' => 'nullable|string|max:255',
+            'home.cta.secondary_cta' => 'nullable|string|max:255',
+            'home.featured.title' => 'nullable|string|max:255',
+            'home.featured.subtitle' => 'nullable|string|max:500',
+            'home.featured.button_text' => 'nullable|string|max:255',
+            'home.webinar.badge' => 'nullable|string|max:255',
+            'home.webinar.title' => 'nullable|string|max:255',
+            'home.webinar.subtitle' => 'nullable|string|max:255',
+            'home.webinar.tab_upcoming' => 'nullable|string|max:255',
+            'home.webinar.tab_completed' => 'nullable|string|max:255',
+            'home.webinar.button_detail' => 'nullable|string|max:255',
+            'home.webinar.button_view_all' => 'nullable|string|max:255',
+            'home.affiliate.title' => 'nullable|string|max:500',
+            'home.affiliate.description' => 'nullable|string|max:500',
+            'home.affiliate.button_text' => 'nullable|string|max:255',
+            'bunnycdn.api_key' => 'nullable|string|max:255',
+            'bunnycdn.storage_zone_name' => 'nullable|string|max:255',
+            'bunnycdn.pull_zone_url' => 'nullable|string|max:255',
+            'bunnycdn.video_library_id' => 'nullable|string|max:255',
+            'bunnycdn.video_api_key' => 'nullable|string|max:255',
+            'bunnycdn.stream_hostname' => 'nullable|string|max:255',
+            'bunnycdn.token_auth_key' => 'nullable|string|max:255',
+            'bunnycdn.enable_token_auth' => 'nullable|boolean',
+            'bunnycdn.token_ttl' => 'nullable|integer|min:60|max:86400',
+            'sepay.webhook_token' => 'nullable|string|max:255',
+            'sepay.pattern' => 'nullable|string|max:20',
+            'sepay.webhook_url' => 'nullable|string|max:255',
+            'sepay_gateway.bank_code' => 'nullable|string|max:50',
+            'sepay_gateway.bank_name' => 'nullable|string|max:255',
+            'sepay_gateway.account_number' => 'nullable|string|max:50',
+            'sepay_gateway.account_name' => 'nullable|string|max:255',
+            'minvoice.enabled' => 'nullable|boolean',
+            'minvoice.base_url' => 'nullable|string|max:255',
+            'minvoice.username' => 'nullable|string|max:255',
+            'minvoice.password' => 'nullable|string|max:255',
+            'minvoice.branch_code' => 'nullable|string|max:50',
+            'minvoice.tax_code' => 'nullable|string|max:50',
+            'minvoice.invoice_type' => 'nullable|integer|min:1|max:20',
+            'minvoice.default_invoice_series' => 'nullable|string|max:50',
+            'minvoice.currency_code' => 'nullable|string|max:10',
+            'minvoice.exchange_rate' => 'nullable|numeric|min:0',
+            'minvoice.payment_method_name' => 'nullable|string|max:100',
+            'minvoice.vat_rate' => 'nullable|numeric|min:0|max:100',
+            'minvoice.vat_code' => 'nullable|string|max:10',
+            'minvoice.unit_code' => 'nullable|string|max:50',
+            'minvoice.item_code_prefix' => 'nullable|string|max:50',
+            'minvoice.request_timeout' => 'nullable|integer|min:5|max:300',
+            'minvoice.token_cache_minutes' => 'nullable|integer|min:1|max:1440',
+            'custom_code.head_scripts' => 'nullable|string|max:65535',
+            'custom_code.body_start_scripts' => 'nullable|string|max:65535',
+            'custom_code.body_end_scripts' => 'nullable|string|max:65535',
+            'custom_code.custom_css' => 'nullable|string|max:65535',
+            // Email / SMTP validations
+            'mail.mailer' => 'nullable|string|in:smtp,sendmail,ses,mailgun,postmark,log',
+            'mail.host' => 'nullable|string|max:255',
+            'mail.port' => 'nullable|integer|min:1|max:65535',
+            'mail.username' => 'nullable|string|max:255',
+            'mail.password' => 'nullable|string|max:255',
+            'mail.encryption' => 'nullable|string|in:tls,ssl,null',
+            'mail.from_address' => 'nullable|string|max:255',
+            'mail.from_name' => 'nullable|string|max:255',
+            // Footer validations
+            'footer.description' => 'nullable|string|max:1000',
+            'footer.copyright_text' => 'nullable|string|max:500',
+            'footer.tagline' => 'nullable|string|max:255',
+            'footer.show_social_links' => 'nullable|boolean',
+            'footer.links' => 'nullable|string|max:65535',
+            // About page validations
+            'about.hero.name' => 'nullable|string|max:255',
+            'about.hero.title' => 'nullable|string|max:500',
+            'about.hero.subtitle' => 'nullable|string|max:500',
+            'about.hero.avatar_url' => 'nullable|string|max:500',
+            'about.hero.cover_url' => 'nullable|string|max:500',
+            'about.hero.verified' => 'nullable|boolean',
+            'about.stats.followers' => 'nullable|string|max:50',
+            'about.stats.students' => 'nullable|string|max:50',
+            'about.stats.courses' => 'nullable|string|max:50',
+            'about.stats.experience' => 'nullable|string|max:50',
+            'about.social.tiktok' => 'nullable|string|max:255',
+            'about.social.youtube' => 'nullable|string|max:255',
+            'about.social.facebook' => 'nullable|string|max:255',
+            'about.social.instagram' => 'nullable|string|max:255',
+            'about.about.headline' => 'nullable|string|max:500',
+            'about.about.bio' => 'nullable|string|max:10000',
+            'about.about.mission' => 'nullable|string|max:2000',
+            'about.achievements' => 'nullable|string|max:65535',
+            'about.skills' => 'nullable|string|max:65535',
+            'about.testimonials' => 'nullable|string|max:65535',
+            'about.cta.title' => 'nullable|string|max:255',
+            'about.cta.subtitle' => 'nullable|string|max:500',
+            'about.cta.button_text' => 'nullable|string|max:100',
+            'about.cta.button_url' => 'nullable|string|max:255',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $data = $validator->validated();
+
+        $items = [
+            ['key' => 'site.name', 'value' => data_get($data, 'site.name')],
+            ['key' => 'site.description', 'value' => data_get($data, 'site.description')],
+            ['key' => 'site.url', 'value' => data_get($data, 'site.url')],
+            ['key' => 'site.logo_url', 'value' => data_get($data, 'site.logo_url')],
+            ['key' => 'site.favicon_url', 'value' => data_get($data, 'site.favicon_url')],
+            ['key' => 'site.contact.email', 'value' => data_get($data, 'site.contact.email')],
+            ['key' => 'site.contact.phone', 'value' => data_get($data, 'site.contact.phone')],
+            ['key' => 'site.contact.address', 'value' => data_get($data, 'site.contact.address')],
+            ['key' => 'site.social.facebook', 'value' => data_get($data, 'site.social.facebook')],
+            ['key' => 'site.social.youtube', 'value' => data_get($data, 'site.social.youtube')],
+            ['key' => 'site.social.instagram', 'value' => data_get($data, 'site.social.instagram')],
+            ['key' => 'site.social.tiktok', 'value' => data_get($data, 'site.social.tiktok')],
+            ['key' => 'site.social.linkedin', 'value' => data_get($data, 'site.social.linkedin')],
+            ['key' => 'site.social.twitter', 'value' => data_get($data, 'site.social.twitter')],
+            ['key' => 'seo.title_template', 'value' => data_get($data, 'seo.title_template')],
+            ['key' => 'seo.default_title', 'value' => data_get($data, 'seo.default_title')],
+            ['key' => 'seo.default_description', 'value' => data_get($data, 'seo.default_description')],
+            ['key' => 'seo.keywords', 'value' => data_get($data, 'seo.keywords')],
+            ['key' => 'home.hero.badge', 'value' => data_get($data, 'home.hero.badge')],
+            ['key' => 'home.hero.title_prefix', 'value' => data_get($data, 'home.hero.title_prefix')],
+            ['key' => 'home.hero.title_highlight', 'value' => data_get($data, 'home.hero.title_highlight')],
+            ['key' => 'home.hero.title_suffix', 'value' => data_get($data, 'home.hero.title_suffix')],
+            ['key' => 'home.hero.subtitle', 'value' => data_get($data, 'home.hero.subtitle')],
+            ['key' => 'home.hero.primary_cta', 'value' => data_get($data, 'home.hero.primary_cta')],
+            ['key' => 'home.hero.secondary_cta', 'value' => data_get($data, 'home.hero.secondary_cta')],
+            ['key' => 'home.stats.courses', 'value' => data_get($data, 'home.stats.courses'), 'type' => 'integer'],
+            ['key' => 'home.stats.students', 'value' => data_get($data, 'home.stats.students'), 'type' => 'integer'],
+            ['key' => 'home.stats.certificates', 'value' => data_get($data, 'home.stats.certificates'), 'type' => 'integer'],
+            ['key' => 'home.stats.countries', 'value' => data_get($data, 'home.stats.countries'), 'type' => 'integer'],
+            ['key' => 'home.stats.rating', 'value' => data_get($data, 'home.stats.rating'), 'type' => 'float'],
+            ['key' => 'home.stats.label_students', 'value' => data_get($data, 'home.stats.label_students')],
+            ['key' => 'home.stats.label_courses', 'value' => data_get($data, 'home.stats.label_courses')],
+            ['key' => 'home.stats.label_certificates', 'value' => data_get($data, 'home.stats.label_certificates')],
+            ['key' => 'home.stats.label_countries', 'value' => data_get($data, 'home.stats.label_countries')],
+            ['key' => 'home.cta.title_prefix', 'value' => data_get($data, 'home.cta.title_prefix')],
+            ['key' => 'home.cta.title_highlight', 'value' => data_get($data, 'home.cta.title_highlight')],
+            ['key' => 'home.cta.title_suffix', 'value' => data_get($data, 'home.cta.title_suffix')],
+            ['key' => 'home.cta.subtitle', 'value' => data_get($data, 'home.cta.subtitle')],
+            ['key' => 'home.cta.primary_cta', 'value' => data_get($data, 'home.cta.primary_cta')],
+            ['key' => 'home.cta.secondary_cta', 'value' => data_get($data, 'home.cta.secondary_cta')],
+            ['key' => 'home.featured.title', 'value' => data_get($data, 'home.featured.title')],
+            ['key' => 'home.featured.subtitle', 'value' => data_get($data, 'home.featured.subtitle')],
+            ['key' => 'home.featured.button_text', 'value' => data_get($data, 'home.featured.button_text')],
+            ['key' => 'home.webinar.badge', 'value' => data_get($data, 'home.webinar.badge')],
+            ['key' => 'home.webinar.title', 'value' => data_get($data, 'home.webinar.title')],
+            ['key' => 'home.webinar.subtitle', 'value' => data_get($data, 'home.webinar.subtitle')],
+            ['key' => 'home.webinar.tab_upcoming', 'value' => data_get($data, 'home.webinar.tab_upcoming')],
+            ['key' => 'home.webinar.tab_completed', 'value' => data_get($data, 'home.webinar.tab_completed')],
+            ['key' => 'home.webinar.button_detail', 'value' => data_get($data, 'home.webinar.button_detail')],
+            ['key' => 'home.webinar.button_view_all', 'value' => data_get($data, 'home.webinar.button_view_all')],
+            ['key' => 'home.affiliate.title', 'value' => data_get($data, 'home.affiliate.title')],
+            ['key' => 'home.affiliate.description', 'value' => data_get($data, 'home.affiliate.description')],
+            ['key' => 'home.affiliate.button_text', 'value' => data_get($data, 'home.affiliate.button_text')],
+            ['key' => 'bunnycdn.api_key', 'value' => data_get($data, 'bunnycdn.api_key')],
+            ['key' => 'bunnycdn.storage_zone_name', 'value' => data_get($data, 'bunnycdn.storage_zone_name')],
+            ['key' => 'bunnycdn.pull_zone_url', 'value' => data_get($data, 'bunnycdn.pull_zone_url')],
+            ['key' => 'bunnycdn.video_library_id', 'value' => data_get($data, 'bunnycdn.video_library_id')],
+            ['key' => 'bunnycdn.video_api_key', 'value' => data_get($data, 'bunnycdn.video_api_key')],
+            ['key' => 'bunnycdn.stream_hostname', 'value' => data_get($data, 'bunnycdn.stream_hostname')],
+            ['key' => 'bunnycdn.token_auth_key', 'value' => data_get($data, 'bunnycdn.token_auth_key')],
+            ['key' => 'bunnycdn.enable_token_auth', 'value' => data_get($data, 'bunnycdn.enable_token_auth'), 'type' => 'boolean'],
+            ['key' => 'bunnycdn.token_ttl', 'value' => data_get($data, 'bunnycdn.token_ttl'), 'type' => 'integer'],
+            ['key' => 'sepay.webhook_token', 'value' => data_get($data, 'sepay.webhook_token')],
+            ['key' => 'sepay.pattern', 'value' => data_get($data, 'sepay.pattern')],
+            ['key' => 'sepay.webhook_url', 'value' => data_get($data, 'sepay.webhook_url')],
+            ['key' => 'sepay_gateway.bank_code', 'value' => data_get($data, 'sepay_gateway.bank_code')],
+            ['key' => 'sepay_gateway.bank_name', 'value' => data_get($data, 'sepay_gateway.bank_name')],
+            ['key' => 'sepay_gateway.account_number', 'value' => data_get($data, 'sepay_gateway.account_number')],
+            ['key' => 'sepay_gateway.account_name', 'value' => data_get($data, 'sepay_gateway.account_name')],
+            ['key' => 'minvoice.enabled', 'value' => data_get($data, 'minvoice.enabled'), 'type' => 'boolean'],
+            ['key' => 'minvoice.base_url', 'value' => data_get($data, 'minvoice.base_url')],
+            ['key' => 'minvoice.username', 'value' => data_get($data, 'minvoice.username')],
+            ['key' => 'minvoice.branch_code', 'value' => data_get($data, 'minvoice.branch_code')],
+            ['key' => 'minvoice.tax_code', 'value' => data_get($data, 'minvoice.tax_code')],
+            ['key' => 'minvoice.invoice_type', 'value' => data_get($data, 'minvoice.invoice_type'), 'type' => 'integer'],
+            ['key' => 'minvoice.default_invoice_series', 'value' => data_get($data, 'minvoice.default_invoice_series')],
+            ['key' => 'minvoice.currency_code', 'value' => data_get($data, 'minvoice.currency_code')],
+            ['key' => 'minvoice.exchange_rate', 'value' => data_get($data, 'minvoice.exchange_rate'), 'type' => 'float'],
+            ['key' => 'minvoice.payment_method_name', 'value' => data_get($data, 'minvoice.payment_method_name')],
+            ['key' => 'minvoice.vat_rate', 'value' => data_get($data, 'minvoice.vat_rate'), 'type' => 'float'],
+            ['key' => 'minvoice.vat_code', 'value' => data_get($data, 'minvoice.vat_code')],
+            ['key' => 'minvoice.unit_code', 'value' => data_get($data, 'minvoice.unit_code')],
+            ['key' => 'minvoice.item_code_prefix', 'value' => data_get($data, 'minvoice.item_code_prefix')],
+            ['key' => 'minvoice.request_timeout', 'value' => data_get($data, 'minvoice.request_timeout'), 'type' => 'integer'],
+            ['key' => 'minvoice.token_cache_minutes', 'value' => data_get($data, 'minvoice.token_cache_minutes'), 'type' => 'integer'],
+            ['key' => 'custom_code.head_scripts', 'value' => data_get($data, 'custom_code.head_scripts')],
+            ['key' => 'custom_code.body_start_scripts', 'value' => data_get($data, 'custom_code.body_start_scripts')],
+            ['key' => 'custom_code.body_end_scripts', 'value' => data_get($data, 'custom_code.body_end_scripts')],
+            ['key' => 'custom_code.custom_css', 'value' => data_get($data, 'custom_code.custom_css')],
+            // Email / SMTP settings
+            ['key' => 'mail.mailer', 'value' => data_get($data, 'mail.mailer')],
+            ['key' => 'mail.host', 'value' => data_get($data, 'mail.host')],
+            ['key' => 'mail.port', 'value' => data_get($data, 'mail.port'), 'type' => 'integer'],
+            ['key' => 'mail.username', 'value' => data_get($data, 'mail.username')],
+            ['key' => 'mail.encryption', 'value' => data_get($data, 'mail.encryption')],
+            ['key' => 'mail.from_address', 'value' => data_get($data, 'mail.from_address')],
+            ['key' => 'mail.from_name', 'value' => data_get($data, 'mail.from_name')],
+            // Footer settings
+            ['key' => 'footer.description', 'value' => data_get($data, 'footer.description')],
+            ['key' => 'footer.copyright_text', 'value' => data_get($data, 'footer.copyright_text')],
+            ['key' => 'footer.tagline', 'value' => data_get($data, 'footer.tagline')],
+            ['key' => 'footer.show_social_links', 'value' => data_get($data, 'footer.show_social_links'), 'type' => 'boolean'],
+            ['key' => 'footer.links', 'value' => data_get($data, 'footer.links')],
+            // About page settings
+            ['key' => 'about.hero.name', 'value' => data_get($data, 'about.hero.name')],
+            ['key' => 'about.hero.title', 'value' => data_get($data, 'about.hero.title')],
+            ['key' => 'about.hero.subtitle', 'value' => data_get($data, 'about.hero.subtitle')],
+            ['key' => 'about.hero.avatar_url', 'value' => data_get($data, 'about.hero.avatar_url')],
+            ['key' => 'about.hero.cover_url', 'value' => data_get($data, 'about.hero.cover_url')],
+            ['key' => 'about.hero.verified', 'value' => data_get($data, 'about.hero.verified'), 'type' => 'boolean'],
+            ['key' => 'about.stats.followers', 'value' => data_get($data, 'about.stats.followers')],
+            ['key' => 'about.stats.students', 'value' => data_get($data, 'about.stats.students')],
+            ['key' => 'about.stats.courses', 'value' => data_get($data, 'about.stats.courses')],
+            ['key' => 'about.stats.experience', 'value' => data_get($data, 'about.stats.experience')],
+            ['key' => 'about.social.tiktok', 'value' => data_get($data, 'about.social.tiktok')],
+            ['key' => 'about.social.youtube', 'value' => data_get($data, 'about.social.youtube')],
+            ['key' => 'about.social.facebook', 'value' => data_get($data, 'about.social.facebook')],
+            ['key' => 'about.social.instagram', 'value' => data_get($data, 'about.social.instagram')],
+            ['key' => 'about.about.headline', 'value' => data_get($data, 'about.about.headline')],
+            ['key' => 'about.about.bio', 'value' => data_get($data, 'about.about.bio')],
+            ['key' => 'about.about.mission', 'value' => data_get($data, 'about.about.mission')],
+            ['key' => 'about.achievements', 'value' => data_get($data, 'about.achievements')],
+            ['key' => 'about.skills', 'value' => data_get($data, 'about.skills')],
+            ['key' => 'about.testimonials', 'value' => data_get($data, 'about.testimonials')],
+            ['key' => 'about.cta.title', 'value' => data_get($data, 'about.cta.title')],
+            ['key' => 'about.cta.subtitle', 'value' => data_get($data, 'about.cta.subtitle')],
+            ['key' => 'about.cta.button_text', 'value' => data_get($data, 'about.cta.button_text')],
+            ['key' => 'about.cta.button_url', 'value' => data_get($data, 'about.cta.button_url')],
+        ];
+
+        // Only save mail password if a new value was provided (not the masked placeholder)
+        $mailPassword = data_get($data, 'mail.password');
+        if ($mailPassword !== null && $mailPassword !== '' && $mailPassword !== '••••••••') {
+            $items[] = ['key' => 'mail.password', 'value' => $mailPassword];
+        }
+
+        // Only save Minvoice password if a new value was provided (not the masked placeholder)
+        $minvoicePassword = data_get($data, 'minvoice.password');
+        if ($minvoicePassword !== null && $minvoicePassword !== '' && $minvoicePassword !== '••••••••') {
+            $items[] = ['key' => 'minvoice.password', 'value' => $minvoicePassword];
+        }
+
+        DB::transaction(function () use ($items) {
+            SettingsService::setMany($items);
+        });
+
+        return response()->json([
+            'message' => 'Settings updated',
+        ]);
+    }
+
+    public function testEmail(Request $request)
+    {
+        $this->ensureAdmin();
+
+        $request->validate([
+            'to' => 'required|email|max:255',
+        ]);
+
+        try {
+            \App\Services\MailConfigService::applyFromSettings();
+
+            \Illuminate\Support\Facades\Mail::raw(
+                "Đây là email thử nghiệm từ hệ thống.\n\nNếu bạn nhận được email này, cấu hình SMTP đã hoạt động chính xác.",
+                function ($message) use ($request) {
+                    $message->to($request->to)
+                            ->subject('Email thử nghiệm - Kiểm tra SMTP');
+                }
+            );
+
+            return response()->json(['message' => 'Email thử nghiệm đã được gửi thành công!']);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Gửi email thất bại: ' . $e->getMessage(),
+            ], 422);
+        }
+    }
+}
