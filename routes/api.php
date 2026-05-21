@@ -42,6 +42,8 @@ use App\Http\Controllers\Admin\AdminInvoiceRequestController;
 use App\Http\Controllers\ServiceController;
 use App\Http\Controllers\Admin\AdminServiceCategoryController;
 use App\Http\Controllers\Admin\AdminServicePostController;
+use App\Http\Controllers\Admin\AdminDurationTierController;
+use App\Http\Controllers\Admin\AdminUserGroupController;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -286,6 +288,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/users/{id}', [AdminUserController::class, 'update']);
         Route::delete('/users/{id}', [AdminUserController::class, 'destroy']);
 
+        // User Groups
+        Route::get('/user-groups', [AdminUserGroupController::class, 'index']);
+        Route::post('/user-groups', [AdminUserGroupController::class, 'store']);
+        Route::get('/user-groups/{id}', [AdminUserGroupController::class, 'show']);
+        Route::put('/user-groups/{id}', [AdminUserGroupController::class, 'update']);
+        Route::delete('/user-groups/{id}', [AdminUserGroupController::class, 'destroy']);
+        Route::get('/user-groups/{id}/members', [AdminUserGroupController::class, 'members']);
+        Route::post('/user-groups/{id}/members', [AdminUserGroupController::class, 'addMembers']);
+        Route::delete('/user-groups/{id}/members', [AdminUserGroupController::class, 'removeMembers']);
+
         // Enrollments
         Route::get('/enrollments', [AdminEnrollmentController::class, 'index']);
         Route::post('/enrollments/manual', [AdminEnrollmentController::class, 'manualEnroll']);
@@ -323,6 +335,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/sections/{id}', [AdminSectionController::class, 'update']);
         Route::delete('/sections/{id}', [AdminSectionController::class, 'destroy']);
         Route::post('/courses/{courseId}/sections/reorder', [AdminSectionController::class, 'reorder']);
+
+        // Duration Tiers
+        Route::get('/courses/{courseId}/duration-tiers', [AdminDurationTierController::class, 'index']);
+        Route::post('/courses/{courseId}/duration-tiers', [AdminDurationTierController::class, 'store']);
+        Route::put('/courses/{courseId}/duration-tiers/{tierId}', [AdminDurationTierController::class, 'update']);
+        Route::delete('/courses/{courseId}/duration-tiers/{tierId}', [AdminDurationTierController::class, 'destroy']);
+        Route::post('/courses/{courseId}/duration-tiers/reorder', [AdminDurationTierController::class, 'reorder']);
 
         // Lessons
         Route::get('/courses/{courseId}/lessons', [AdminLessonController::class, 'index']);

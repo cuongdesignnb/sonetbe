@@ -61,6 +61,11 @@ class CourseController extends Controller
 
         $courses = $query->paginate(12);
 
+        // Add price range for courses with duration tiers
+        foreach ($courses as $course) {
+            $course->setAttribute('price_range', $course->priceRange());
+        }
+
         return response()->json($courses);
     }
 
@@ -83,7 +88,8 @@ class CourseController extends Controller
             'reviews' => function ($query) {
                 $query->where('is_approved', true)->orderByDesc('created_at');
             },
-            'reviews.user'
+            'reviews.user',
+            'durationTiers',
         ]);
 
         if (is_numeric($id)) {
@@ -108,9 +114,22 @@ class CourseController extends Controller
             $isEnrolled = $user->isEnrolledIn($course->id);
         }
 
+        // Filter duration tiers based on user permissions
+        $filteredTiers = $course->durationTiers->filter(function ($tier) use ($user) {
+            if (!$user) {
+                // Guest users only see non-targeted tiers
+                return !$tier->isTargeted();
+            }
+            return $tier->isAvailableForUser($user->id);
+        })->values();
+
+        // Replace loaded tiers with filtered ones
+        $course->setRelation('durationTiers', $filteredTiers);
+
         return response()->json([
             'course' => $course,
-            'is_enrolled' => $isEnrolled
+            'is_enrolled' => $isEnrolled,
+            'price_range' => $course->priceRange(),
         ]);
     }
 

@@ -103,6 +103,7 @@ class AdminEnrollmentController extends Controller
     /**
      * Manually enroll a user in a course (admin only).
      * Creates enrollment + optional payment record for revenue tracking.
+     * Supports duration tier selection with expiry calculation.
      */
     public function manualEnroll(Request $request)
     {
@@ -111,6 +112,7 @@ class AdminEnrollmentController extends Controller
         $validator = Validator::make($request->all(), [
             'user_id' => 'required|integer|exists:users,id',
             'course_id' => 'required|integer|exists:courses,id',
+            'duration_tier_id' => 'nullable|integer|exists:course_duration_tiers,id',
             'amount' => 'nullable|numeric|min:0',
             'note' => 'nullable|string|max:500',
         ]);
@@ -124,27 +126,56 @@ class AdminEnrollmentController extends Controller
 
         $userId = $request->integer('user_id');
         $courseId = $request->integer('course_id');
+        $tierId = $request->input('duration_tier_id');
         $amount = (float) ($request->input('amount', 0));
         $note = $request->input('note', '');
+
+        // Validate tier belongs to course if provided
+        $tier = null;
+        $expiresAt = null;
+        if ($tierId) {
+            $tier = \App\Models\CourseDurationTier::where('id', $tierId)
+                ->where('course_id', $courseId)
+                ->where('is_active', true)
+                ->first();
+
+            if (!$tier) {
+                return response()->json([
+                    'message' => 'Gói thời gian không hợp lệ hoặc không thuộc khóa học này.',
+                ], 422);
+            }
+
+            // Use tier price if amount not explicitly provided
+            if (!$request->filled('amount')) {
+                $amount = (float) $tier->price;
+            }
+
+            // Calculate expiry
+            if ($tier->duration_days) {
+                $expiresAt = now()->addDays($tier->duration_days);
+            }
+        }
 
         // Check if already enrolled
         $existing = Enrollment::where('user_id', $userId)
             ->where('course_id', $courseId)
             ->first();
 
-        if ($existing && in_array($existing->status, ['active', 'completed'])) {
+        if ($existing && in_array($existing->status, ['active', 'completed']) && !$existing->isExpired()) {
             return response()->json([
-                'message' => 'Học viên đã được đăng ký khóa học này rồi.',
+                'message' => 'Học viên đã được đăng ký khóa học này rồi và vẫn còn hiệu lực.',
             ], 409);
         }
 
-        return DB::transaction(function () use ($userId, $courseId, $amount, $note, $existing) {
+        return DB::transaction(function () use ($userId, $courseId, $amount, $note, $existing, $tier, $tierId, $expiresAt) {
             // Create or update enrollment
             if ($existing) {
                 $existing->update([
                     'status' => 'active',
                     'enrolled_at' => now(),
                     'amount_paid' => $amount,
+                    'duration_tier_id' => $tierId,
+                    'expires_at' => $expiresAt,
                 ]);
                 $enrollment = $existing;
             } else {
@@ -154,6 +185,8 @@ class AdminEnrollmentController extends Controller
                     'status' => 'active',
                     'enrolled_at' => now(),
                     'amount_paid' => $amount,
+                    'duration_tier_id' => $tierId,
+                    'expires_at' => $expiresAt,
                 ]);
             }
 
@@ -164,6 +197,7 @@ class AdminEnrollmentController extends Controller
                 'user_id' => $userId,
                 'course_id' => $courseId,
                 'enrollment_id' => $enrollment->id,
+                'duration_tier_id' => $tierId,
                 'order_code' => $orderCode,
                 'amount' => $amount,
                 'original_amount' => $amount,
@@ -176,11 +210,13 @@ class AdminEnrollmentController extends Controller
                     'admin_id' => Auth::id(),
                     'admin_name' => Auth::user()->name ?? '',
                     'note' => $note,
+                    'duration_tier_id' => $tierId,
+                    'expires_at' => $expiresAt?->toIso8601String(),
                     'created_at' => now()->toIso8601String(),
                 ]),
             ]);
 
-            $enrollment->load(['user', 'course']);
+            $enrollment->load(['user', 'course', 'durationTier']);
 
             return response()->json([
                 'message' => 'Đã thêm học viên vào khóa học thành công.',
@@ -197,6 +233,8 @@ class AdminEnrollmentController extends Controller
                     ] : null,
                     'amount' => $amount,
                     'order_code' => $orderCode,
+                    'tier_label' => $enrollment->durationTier?->label,
+                    'expires_at' => $expiresAt?->toIso8601String(),
                 ],
             ], 201);
         });

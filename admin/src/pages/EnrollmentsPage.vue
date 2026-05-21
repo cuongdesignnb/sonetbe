@@ -434,12 +434,27 @@
           <!-- Course Select -->
           <div class="form-group">
             <label class="form-label">Khóa học *</label>
-            <select v-model.number="manualCourseId" class="input">
+            <select v-model.number="manualCourseId" class="input" @change="onManualCourseChange">
               <option :value="0" disabled>-- Chọn khóa học --</option>
               <option v-for="c in courses" :key="c.id" :value="c.id">
                 {{ c.title }}
               </option>
             </select>
+          </div>
+
+          <!-- Duration Tier Select -->
+          <div class="form-group" v-if="manualCourseTiers.length > 0">
+            <label class="form-label">Gói thời gian</label>
+            <select v-model.number="manualTierId" class="input" @change="onManualTierChange">
+              <option :value="0">-- Không chọn gói (mặc định) --</option>
+              <option v-for="t in manualCourseTiers" :key="t.id" :value="t.id">
+                {{ t.label }} - {{ t.price?.toLocaleString('vi-VN') }}đ
+                {{ t.duration_days ? `(${t.duration_days} ngày)` : '(Vĩnh viễn)' }}
+              </option>
+            </select>
+            <div class="form-hint" v-if="manualTierId">
+              Chọn gói sẽ tự động tính giá và thời hạn hết hạn.
+            </div>
           </div>
 
           <!-- Amount -->
@@ -539,6 +554,8 @@ const manualNote = ref("");
 const manualSubmitting = ref(false);
 const manualError = ref<string | null>(null);
 const manualSuccess = ref<string | null>(null);
+const manualTierId = ref(0);
+const manualCourseTiers = ref<{ id: number; label: string; price: number; duration_days: number | null }[]>([]);
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 function openManualEnrollModal() {
@@ -549,6 +566,8 @@ function openManualEnrollModal() {
   manualCourseId.value = 0;
   manualAmount.value = 0;
   manualNote.value = "";
+  manualTierId.value = 0;
+  manualCourseTiers.value = [];
   manualError.value = null;
   manualSuccess.value = null;
 }
@@ -599,6 +618,7 @@ async function submitManualEnroll() {
         body: JSON.stringify({
           user_id: manualSelectedUser.value.id,
           course_id: manualCourseId.value,
+          duration_tier_id: manualTierId.value || null,
           amount: manualAmount.value || 0,
           note: manualNote.value,
         }),
@@ -609,6 +629,8 @@ async function submitManualEnroll() {
     manualSelectedUser.value = null;
     manualUserSearch.value = "";
     manualCourseId.value = 0;
+    manualTierId.value = 0;
+    manualCourseTiers.value = [];
     manualAmount.value = 0;
     manualNote.value = "";
     // Reload
@@ -617,6 +639,28 @@ async function submitManualEnroll() {
     manualError.value = extractMessage(e);
   } finally {
     manualSubmitting.value = false;
+  }
+}
+
+async function onManualCourseChange() {
+  manualTierId.value = 0;
+  manualCourseTiers.value = [];
+  if (!manualCourseId.value) return;
+  try {
+    const res = await apiFetch<{ data: { id: number; label: string; price: number; duration_days: number | null; is_active: boolean }[] }>(
+      `/api/admin/courses/${manualCourseId.value}/duration-tiers`
+    );
+    manualCourseTiers.value = (res.data || []).filter(t => t.is_active);
+  } catch {
+    manualCourseTiers.value = [];
+  }
+}
+
+function onManualTierChange() {
+  if (!manualTierId.value) return;
+  const tier = manualCourseTiers.value.find(t => t.id === manualTierId.value);
+  if (tier) {
+    manualAmount.value = tier.price;
   }
 }
 

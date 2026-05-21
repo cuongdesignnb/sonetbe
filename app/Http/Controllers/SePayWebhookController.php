@@ -153,11 +153,22 @@ class SePayWebhookController extends Controller
         } else {
             $enrollment = Enrollment::query()->whereKey($payment->enrollment_id)->first();
             if ($enrollment) {
+                // Calculate expiry from duration tier
+                $expiresAt = null;
+                if ($payment->duration_tier_id) {
+                    $tier = $payment->durationTier;
+                    if ($tier && $tier->duration_days) {
+                        $expiresAt = now()->addDays($tier->duration_days);
+                    }
+                }
+
                 $enrollment->update([
                     'status' => 'active',
                     'enrolled_at' => now(),
                     'amount_paid' => $payment->amount,
                     'payment_id' => (string) $sepayId,
+                    'duration_tier_id' => $payment->duration_tier_id,
+                    'expires_at' => $expiresAt,
                 ]);
             }
         }

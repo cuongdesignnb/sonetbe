@@ -30,6 +30,7 @@ import MenuPage from "./pages/MenuPage.vue";
 import ServiceCategoriesPage from "./pages/ServiceCategoriesPage.vue";
 import ServicePostsPage from "./pages/ServicePostsPage.vue";
 import ServicePostEditorPage from "./pages/ServicePostEditorPage.vue";
+import UserGroupsPage from "./pages/UserGroupsPage.vue";
 
 import "./styles.css";
 import "quill/dist/quill.snow.css";
@@ -66,6 +67,7 @@ const router = createRouter({
     { path: "/service-categories", component: ServiceCategoriesPage },
     { path: "/service-posts", component: ServicePostsPage },
     { path: "/service-posts/:id", component: ServicePostEditorPage },
+    { path: "/user-groups", component: UserGroupsPage },
   ],
 });
 

@@ -65,6 +65,7 @@ class AdminCourseController extends Controller
             'lessons' => function ($q) {
                 $q->orderBy('order');
             },
+            'allDurationTiers',
         ])->findOrFail($id);
 
         return response()->json(['course' => $course]);

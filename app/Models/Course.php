@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use App\Models\CourseDurationTier;
 
 class Course extends Model
 {
@@ -102,6 +103,51 @@ class Course extends Model
     public function faqs()
     {
         return $this->hasMany(CourseFaq::class)->orderBy('order')->orderBy('id');
+    }
+
+    public function durationTiers()
+    {
+        return $this->hasMany(CourseDurationTier::class)->active()->ordered();
+    }
+
+    public function allDurationTiers()
+    {
+        return $this->hasMany(CourseDurationTier::class)->ordered();
+    }
+
+    /**
+     * Check if this course has duration tiers configured.
+     */
+    public function hasDurationTiers(): bool
+    {
+        return $this->durationTiers()->exists();
+    }
+
+    /**
+     * Get the default tier, or the first active tier.
+     */
+    public function defaultTier(): ?CourseDurationTier
+    {
+        return $this->durationTiers()
+            ->where('is_default', true)
+            ->first()
+            ?? $this->durationTiers()->first();
+    }
+
+    /**
+     * Get [min_price, max_price] from active tiers.
+     * Falls back to [price, price] if no tiers exist.
+     */
+    public function priceRange(): array
+    {
+        $tiers = $this->durationTiers;
+        if ($tiers->isEmpty()) {
+            return [(float) $this->price, (float) $this->price];
+        }
+        return [
+            (float) $tiers->min('price'),
+            (float) $tiers->max('price'),
+        ];
     }
 
     // Accessors

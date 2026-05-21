@@ -12,6 +12,7 @@ class CoursePayment extends Model
     protected $fillable = [
         'product_type',
         'user_id',
+        'duration_tier_id',
         'course_id',
         'ebook_id',
         'webinar_id',
@@ -65,6 +66,11 @@ class CoursePayment extends Model
     public function voucher()
     {
         return $this->belongsTo(Voucher::class);
+    }
+
+    public function durationTier()
+    {
+        return $this->belongsTo(\App\Models\CourseDurationTier::class, 'duration_tier_id');
     }
 
     public function invoiceRequest()

@@ -44,6 +44,14 @@
       >
         Bài học
       </button>
+      <button
+        class="tab"
+        :class="{ active: tab === 'tiers' }"
+        :disabled="isNew"
+        @click="tab = 'tiers'; loadTiers()"
+      >
+        Gói thời gian
+      </button>
     </div>
 
     <div class="card" style="margin-top: 12px" v-if="tab === 'course'">
@@ -590,6 +598,283 @@
       </div>
     </div>
 
+    <!-- Duration Tiers Tab -->
+    <div class="card" style="margin-top: 12px" v-if="tab === 'tiers'">
+      <h2 class="h2">Gói thời gian & Giá</h2>
+      <p class="muted" style="margin-bottom: 16px">
+        Thiết lập các gói thời gian truy cập khóa học với mức giá khác nhau. Nếu không tạo gói nào, khóa học sẽ sử dụng giá mặc định (vĩnh viễn).
+      </p>
+
+      <!-- Add tier form -->
+      <form
+        class="tier-form"
+        @submit.prevent="createTier"
+      >
+        <div class="tier-form-row">
+          <label class="label" style="flex: 2">
+            <span>Tên gói</span>
+            <input
+              v-model="newTier.label"
+              class="input"
+              placeholder="VD: 3 tháng, 6 tháng, Vĩnh viễn"
+              required
+            />
+          </label>
+          <label class="label" style="flex: 1">
+            <span>Thời hạn (ngày)</span>
+            <input
+              v-model.number="newTier.duration_days"
+              class="input"
+              type="number"
+              min="1"
+              placeholder="Trống = Vĩnh viễn"
+            />
+          </label>
+          <label class="label" style="flex: 1">
+            <span>Giá</span>
+            <input
+              v-model.number="newTier.price"
+              class="input"
+              type="number"
+              min="0"
+              step="1000"
+              required
+            />
+          </label>
+          <label class="label" style="flex: 1">
+            <span>Giá gốc</span>
+            <input
+              v-model.number="newTier.original_price"
+              class="input"
+              type="number"
+              min="0"
+              step="1000"
+              placeholder="Không bắt buộc"
+            />
+          </label>
+          <button
+            class="btn btn-primary"
+            :disabled="loadingTiers"
+            type="submit"
+            style="align-self: flex-end; height: 42px"
+          >
+            + Thêm gói
+          </button>
+        </div>
+      </form>
+
+      <!-- Tiers table -->
+      <table class="table tiers-table" style="margin-top: 16px">
+        <thead>
+          <tr>
+            <th style="width: 60px; text-align: center">STT</th>
+            <th style="min-width: 150px">Tên gói</th>
+            <th style="width: 120px; text-align: center">Thời hạn</th>
+            <th style="width: 140px; text-align: right">Giá</th>
+            <th style="width: 140px; text-align: right">Giá gốc</th>
+            <th style="width: 100px; text-align: center">Mặc định</th>
+            <th style="width: 100px; text-align: center">Hoạt động</th>
+            <th style="width: 200px">Đối tượng</th>
+            <th style="width: 80px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="t in tiers" :key="t.id" class="tier-row">
+            <td style="text-align: center">
+              <input
+                v-model.number="t.sort_order"
+                class="input input-sm"
+                type="number"
+                min="0"
+                style="width: 50px; text-align: center"
+                @change="updateTier(t)"
+              />
+            </td>
+            <td>
+              <input
+                v-model="t.label"
+                class="input input-sm"
+                placeholder="Tên gói"
+                @change="updateTier(t)"
+              />
+            </td>
+            <td style="text-align: center">
+              <input
+                v-model.number="t.duration_days"
+                class="input input-sm"
+                type="number"
+                min="1"
+                :placeholder="'Vĩnh viễn'"
+                style="width: 80px; text-align: center"
+                @change="updateTier(t)"
+              />
+              <div class="muted" style="font-size: 11px; margin-top: 2px">
+                {{ t.duration_days ? formatDuration(t.duration_days) : 'Vĩnh viễn' }}
+              </div>
+            </td>
+            <td style="text-align: right">
+              <input
+                v-model.number="t.price"
+                class="input input-sm"
+                type="number"
+                min="0"
+                step="1000"
+                style="width: 120px; text-align: right"
+                @change="updateTier(t)"
+              />
+            </td>
+            <td style="text-align: right">
+              <input
+                v-model.number="t.original_price"
+                class="input input-sm"
+                type="number"
+                min="0"
+                step="1000"
+                style="width: 120px; text-align: right"
+                placeholder="-"
+                @change="updateTier(t)"
+              />
+            </td>
+            <td style="text-align: center">
+              <input
+                type="checkbox"
+                :checked="t.is_default"
+                @change="setDefaultTier(t)"
+              />
+            </td>
+            <td style="text-align: center">
+              <input
+                type="checkbox"
+                v-model="t.is_active"
+                @change="updateTier(t)"
+              />
+            </td>
+            <td>
+              <div class="tier-targets">
+                <div v-for="target in (t.targets || [])" :key="target.id" class="tier-target-chip" :style="target.target_type === 'group' && target.target_color ? `border-color: ${target.target_color}` : ''">
+                  <span class="tier-target-type">{{ target.target_type === 'user' ? '👤' : '👥' }}</span>
+                  <span class="tier-target-name">{{ target.target_name }}</span>
+                  <button class="tier-target-remove" @click="removeTierTarget(t.id, target.target_type, target.target_id)" title="Xóa">×</button>
+                </div>
+                <button class="btn btn-outline btn-xs" type="button" @click="openTierTargetModal(t)">+ Thêm</button>
+              </div>
+            </td>
+            <td style="text-align: center">
+              <button
+                class="btn btn-danger btn-sm"
+                @click="deleteTier(t)"
+                title="Xóa gói"
+              >
+                🗑️
+              </button>
+            </td>
+          </tr>
+          <tr v-if="tiers.length === 0">
+            <td colspan="9" class="muted" style="text-align: center; padding: 24px">
+              Chưa có gói thời gian nào. Khóa học sẽ sử dụng giá mặc định (truy cập vĩnh viễn).
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Quick add presets -->
+      <div style="margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap">
+        <span class="muted" style="align-self: center">Thêm nhanh:</span>
+        <button
+          class="btn btn-secondary btn-sm"
+          type="button"
+          @click="addPresetTier('3 tháng', 90)"
+        >
+          3 tháng
+        </button>
+        <button
+          class="btn btn-secondary btn-sm"
+          type="button"
+          @click="addPresetTier('6 tháng', 180)"
+        >
+          6 tháng
+        </button>
+        <button
+          class="btn btn-secondary btn-sm"
+          type="button"
+          @click="addPresetTier('12 tháng', 365)"
+        >
+          12 tháng
+        </button>
+        <button
+          class="btn btn-secondary btn-sm"
+          type="button"
+          @click="addPresetTier('Vĩnh viễn', null)"
+        >
+          Vĩnh viễn
+        </button>
+      </div>
+
+      <!-- Tier Target Modal -->
+      <div v-if="tierTargetModal.open" class="modal-backdrop" @click.self="closeTierTargetModal">
+        <div class="modal" style="width: min(560px, 95vw)">
+          <div class="modal-header">
+            <div class="modal-title">Chỉ định đối tượng - {{ tierTargetModal.tierLabel }}</div>
+            <button class="btn btn-secondary btn-sm" @click="closeTierTargetModal">Đóng</button>
+          </div>
+          <div class="modal-body">
+            <p class="muted" style="margin-bottom: 12px">Chỉ người dùng hoặc nhóm được chỉ định mới thấy và mua được gói này. Nếu không chỉ định, tất cả đều thấy.</p>
+            
+            <!-- Add user -->
+            <div class="form-group">
+              <label class="label">Thêm người dùng</label>
+              <div style="position: relative">
+                <input v-model="tierTargetSearch" class="input" placeholder="Tìm theo tên hoặc email..." @input="debouncedSearchTargetUsers" />
+                <div v-if="tierTargetSearchResults.length > 0" class="search-dropdown" style="position: absolute; top: 100%; left: 0; right: 0; z-index: 10">
+                  <div v-for="u in tierTargetSearchResults" :key="u.id" class="search-dropdown-item" @click="addTierTarget(tierTargetModal.tierId!, 'user', u.id)">
+                    <span>👤 {{ u.name }} ({{ u.email }})</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Add group -->
+            <div class="form-group" style="margin-top: 12px">
+              <label class="label">Thêm nhóm người dùng</label>
+              <div style="display: flex; flex-wrap: wrap; gap: 6px">
+                <button
+                  v-for="g in userGroups.filter(ug => !getTierTargets(tierTargetModal.tierId!).some(t => t.target_type === 'group' && t.target_id === ug.id))"
+                  :key="g.id"
+                  class="btn btn-outline btn-sm"
+                  type="button"
+                  @click="addTierTarget(tierTargetModal.tierId!, 'group', g.id)"
+                  :style="`border-color: ${g.color}; color: ${g.color}`"
+                >
+                  👥 {{ g.name }} ({{ g.members_count }})
+                </button>
+                <span v-if="userGroups.length === 0" class="muted">Chưa có nhóm nào. Tạo nhóm tại mục "Nhóm người dùng".</span>
+              </div>
+            </div>
+
+            <!-- Current targets -->
+            <div style="margin-top: 16px">
+              <label class="label">Đối tượng hiện tại</label>
+              <div v-if="getTierTargets(tierTargetModal.tierId!).length === 0" class="muted" style="padding: 8px 0">Chưa chỉ định. Tất cả người dùng đều thấy gói này.</div>
+              <div v-else style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px">
+                <div
+                  v-for="target in getTierTargets(tierTargetModal.tierId!)"
+                  :key="target.id"
+                  class="tier-target-chip"
+                  :style="target.target_type === 'group' && target.target_color ? `border-color: ${target.target_color}` : ''"
+                >
+                  <span>{{ target.target_type === 'user' ? '👤' : '👥' }} {{ target.target_name }}</span>
+                  <button class="tier-target-remove" @click="removeTierTarget(tierTargetModal.tierId!, target.target_type, target.target_id)">×</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="closeTierTargetModal">Đóng</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <MediaPickerModal
       :open="openMediaPicker"
       :multiple="false"
@@ -811,7 +1096,7 @@ const router = useRouter();
 const courseId = computed(() => Number(route.params.id));
 const isNew = computed(() => route.params.id === "new");
 
-const tab = ref<"course" | "sections" | "lessons" | "landing">("course");
+const tab = ref<"course" | "sections" | "lessons" | "landing" | "tiers">("course");
 
 const categories = ref<Category[]>([]);
 const sections = ref<CourseSection[]>([]);
@@ -910,6 +1195,46 @@ const newLesson = ref({
   order: 1,
   section_id: null as number | null,
   is_preview: false,
+});
+
+// Duration tiers
+type TierTarget = {
+  id: number;
+  duration_tier_id: number;
+  target_type: 'user' | 'group';
+  target_id: number;
+  target_name?: string;
+  target_email?: string;
+  target_color?: string;
+};
+
+type DurationTier = {
+  id: number;
+  course_id: number;
+  label: string;
+  duration_days: number | null;
+  price: number;
+  original_price: number | null;
+  sort_order: number;
+  is_default: boolean;
+  is_active: boolean;
+  targets?: TierTarget[];
+};
+const tiers = ref<DurationTier[]>([]);
+const loadingTiers = ref(false);
+
+// Tier targets
+type UserGroupOption = { id: number; name: string; color: string; members_count: number };
+const userGroups = ref<UserGroupOption[]>([]);
+const tierTargetModal = ref<{ open: boolean; tierId: number | null; tierLabel: string }>({ open: false, tierId: null, tierLabel: '' });
+const tierTargetSearch = ref('');
+const tierTargetSearchResults = ref<{ id: number; name: string; email: string }[]>([]);
+let tierTargetSearchTimer: ReturnType<typeof setTimeout> | null = null;
+const newTier = ref({
+  label: "",
+  duration_days: null as number | null,
+  price: 0,
+  original_price: null as number | null,
 });
 
 async function loadCategories() {
@@ -1634,6 +1959,7 @@ async function init() {
     await loadCourse();
     await loadSections();
     await loadLessons();
+    loadUserGroups();
   } catch (e) {
     if (e instanceof HttpError && e.status === 401) {
       location.href = "/admin/login";
@@ -1644,6 +1970,213 @@ async function init() {
 }
 
 onMounted(init);
+
+// Duration tier functions
+async function loadTiers() {
+  if (isNew.value) return;
+  loadingTiers.value = true;
+  try {
+    const res = await apiFetch<{ data: DurationTier[] }>(
+      `/api/admin/courses/${courseId.value}/duration-tiers`,
+    );
+    tiers.value = res.data;
+  } catch (e) {
+    toastError(extractMessage(e));
+  } finally {
+    loadingTiers.value = false;
+  }
+}
+
+async function createTier() {
+  if (isNew.value) return;
+  try {
+    await apiFetch(`/api/admin/courses/${courseId.value}/duration-tiers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        label: newTier.value.label,
+        duration_days: newTier.value.duration_days || null,
+        price: newTier.value.price,
+        original_price: newTier.value.original_price || null,
+        sort_order: tiers.value.length + 1,
+      }),
+    });
+    newTier.value = { label: "", duration_days: null, price: 0, original_price: null };
+    await loadTiers();
+    toastSuccess("Đã thêm gói thời gian.");
+  } catch (e) {
+    toastError(extractMessage(e));
+  }
+}
+
+async function updateTier(t: DurationTier) {
+  try {
+    await apiFetch(
+      `/api/admin/courses/${courseId.value}/duration-tiers/${t.id}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label: t.label,
+          duration_days: t.duration_days || null,
+          price: t.price,
+          original_price: t.original_price || null,
+          sort_order: t.sort_order,
+          is_default: t.is_default,
+          is_active: t.is_active,
+        }),
+      },
+    );
+    toastSuccess("Đã cập nhật gói.");
+  } catch (e) {
+    toastError(extractMessage(e));
+    await loadTiers();
+  }
+}
+
+async function setDefaultTier(t: DurationTier) {
+  // Unset all others, set this as default
+  tiers.value.forEach((tier) => (tier.is_default = tier.id === t.id));
+  try {
+    await apiFetch(
+      `/api/admin/courses/${courseId.value}/duration-tiers/${t.id}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_default: true }),
+      },
+    );
+    toastSuccess("Đã đặt gói mặc định.");
+  } catch (e) {
+    toastError(extractMessage(e));
+    await loadTiers();
+  }
+}
+
+async function deleteTier(t: DurationTier) {
+  if (!confirm(`Xóa gói "${t.label}"?`)) return;
+  try {
+    await apiFetch(
+      `/api/admin/courses/${courseId.value}/duration-tiers/${t.id}`,
+      { method: "DELETE" },
+    );
+    await loadTiers();
+    toastSuccess("Đã xóa gói.");
+  } catch (e) {
+    toastError(extractMessage(e));
+  }
+}
+
+async function addPresetTier(label: string, days: number | null) {
+  newTier.value.label = label;
+  newTier.value.duration_days = days;
+  newTier.value.price = 0;
+  newTier.value.original_price = null;
+  // Don't auto-submit, let user set price
+}
+
+// Tier target functions
+async function loadUserGroups() {
+  try {
+    const res = await apiFetch<{ data: UserGroupOption[] }>('/api/admin/user-groups');
+    userGroups.value = res.data || [];
+  } catch {
+    // ignore
+  }
+}
+
+function openTierTargetModal(t: DurationTier) {
+  tierTargetModal.value = { open: true, tierId: t.id, tierLabel: t.label };
+  tierTargetSearch.value = '';
+  tierTargetSearchResults.value = [];
+}
+
+function closeTierTargetModal() {
+  tierTargetModal.value = { open: false, tierId: null, tierLabel: '' };
+}
+
+function getTierTargets(tierId: number): TierTarget[] {
+  const tier = tiers.value.find(t => t.id === tierId);
+  return tier?.targets || [];
+}
+
+function debouncedSearchTargetUsers() {
+  if (tierTargetSearchTimer) clearTimeout(tierTargetSearchTimer);
+  const q = tierTargetSearch.value.trim();
+  if (q.length < 2) { tierTargetSearchResults.value = []; return; }
+  tierTargetSearchTimer = setTimeout(() => searchTargetUsers(q), 300);
+}
+
+async function searchTargetUsers(q: string) {
+  try {
+    const res = await apiFetch<{ data: { id: number; name: string; email: string }[] }>(
+      `/api/admin/users?search=${encodeURIComponent(q)}`
+    );
+    tierTargetSearchResults.value = res.data || [];
+  } catch {
+    tierTargetSearchResults.value = [];
+  }
+}
+
+async function addTierTarget(tierId: number, targetType: 'user' | 'group', targetId: number) {
+  const tier = tiers.value.find(t => t.id === tierId);
+  if (!tier) return;
+  const currentTargets = tier.targets || [];
+  // Check duplicate
+  if (currentTargets.some(t => t.target_type === targetType && t.target_id === targetId)) {
+    toastError('Đối tượng này đã được thêm.');
+    return;
+  }
+  const newTargets = [...currentTargets.map(t => ({ target_type: t.target_type, target_id: t.target_id })), { target_type: targetType, target_id: targetId }];
+  try {
+    await apiFetch(
+      `/api/admin/courses/${courseId.value}/duration-tiers/${tierId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets: newTargets }),
+      }
+    );
+    await loadTiers();
+    toastSuccess('Đã thêm đối tượng.');
+    tierTargetSearch.value = '';
+    tierTargetSearchResults.value = [];
+  } catch (e) {
+    toastError(extractMessage(e));
+  }
+}
+
+async function removeTierTarget(tierId: number, targetType: string, targetId: number) {
+  const tier = tiers.value.find(t => t.id === tierId);
+  if (!tier) return;
+  const newTargets = (tier.targets || []).filter(t => !(t.target_type === targetType && t.target_id === targetId)).map(t => ({ target_type: t.target_type, target_id: t.target_id }));
+  try {
+    await apiFetch(
+      `/api/admin/courses/${courseId.value}/duration-tiers/${tierId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets: newTargets }),
+      }
+    );
+    await loadTiers();
+    toastSuccess('Đã xóa đối tượng.');
+  } catch (e) {
+    toastError(extractMessage(e));
+  }
+}
+
+function formatDuration(days: number): string {
+  if (days >= 365) {
+    const years = Math.round(days / 365 * 10) / 10;
+    return years === 1 ? '1 năm' : `${years} năm`;
+  }
+  if (days >= 30) {
+    const months = Math.round(days / 30);
+    return `${months} tháng`;
+  }
+  return `${days} ngày`;
+}
 </script>
 
 <style scoped>
@@ -1864,5 +2397,103 @@ onMounted(init);
 .btn-sm {
   padding: 6px 12px;
   font-size: 12px;
+}
+</style>
+
+<style scoped>
+/* Tier Form Styles */
+.tier-form {
+  background: #f0fdf4;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 8px;
+  border: 1px solid #bbf7d0;
+}
+
+.tier-form-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.tier-form-row .label {
+  margin: 0;
+}
+
+/* Tiers Table Styles */
+.tiers-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.tiers-table thead th {
+  background: #f0fdf4;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #166534;
+  padding: 12px 10px;
+  border-bottom: 2px solid #bbf7d0;
+}
+
+.tiers-table tbody tr {
+  transition: background-color 0.15s ease;
+}
+
+.tiers-table tbody tr:hover {
+  background-color: #f0fdf4;
+}
+
+.tiers-table td {
+  padding: 10px 8px;
+  vertical-align: middle;
+  border-bottom: 1px solid #e2e8f0;
+}
+.tier-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.tier-target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--gray-300, #d1d5db);
+  background: var(--gray-50, #f9fafb);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.tier-target-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gray-400, #9ca3af);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.tier-target-remove:hover {
+  color: #ef4444;
+}
+.search-dropdown {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.search-dropdown-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.search-dropdown-item:hover {
+  background: #f1f5f9;
 }
 </style>

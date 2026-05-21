@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Course;
+use App\Models\CourseDurationTier;
 use App\Models\CoursePayment;
 use App\Models\Enrollment;
 use App\Models\Voucher;
@@ -23,7 +24,22 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Already enrolled'], 400);
         }
 
-        $originalPrice = (float) $course->price;
+        // Resolve duration tier
+        $tier = null;
+        $durationTierId = $request->input('duration_tier_id');
+        if ($durationTierId) {
+            $tier = CourseDurationTier::where('course_id', $course->id)
+                ->where('id', $durationTierId)
+                ->where('is_active', true)
+                ->first();
+
+            if (!$tier) {
+                return response()->json(['message' => 'Gói thời gian không hợp lệ hoặc đã bị vô hiệu hoá'], 400);
+            }
+        }
+
+        // Use tier price if available, otherwise course price
+        $originalPrice = $tier ? (float) $tier->price : (float) $course->price;
         $voucherCode = $request->input('voucher_code');
         $voucher = null;
         $discountAmount = 0;
@@ -73,6 +89,10 @@ class PaymentController extends Controller
                             'status' => 'active',
                             'enrolled_at' => now(),
                             'amount_paid' => 0,
+                            'duration_tier_id' => $tier?->id,
+                            'expires_at' => $tier && $tier->duration_days
+                                ? now()->addDays($tier->duration_days)
+                                : null,
                         ]
                     );
 
@@ -137,6 +157,7 @@ class PaymentController extends Controller
             $payment = CoursePayment::create([
                 'user_id' => $user->id,
                 'course_id' => $course->id,
+                'duration_tier_id' => $tier?->id,
                 'enrollment_id' => $enrollment->id,
                 'voucher_id' => $voucher?->id,
                 'original_amount' => $originalPrice,
