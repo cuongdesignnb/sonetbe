@@ -14,6 +14,15 @@ class CourseSection extends Model
         'title',
         'description',
         'order',
+        'price',
+        'original_price',
+        'is_sellable',
+    ];
+
+    protected $casts = [
+        'price' => 'decimal:2',
+        'original_price' => 'decimal:2',
+        'is_sellable' => 'boolean',
     ];
 
     public function course()
@@ -24,5 +33,15 @@ class CourseSection extends Model
     public function lessons()
     {
         return $this->hasMany(Lesson::class, 'section_id')->orderBy('order');
+    }
+
+    public function enrollments()
+    {
+        return $this->hasMany(Enrollment::class, 'section_id');
+    }
+
+    public function payments()
+    {
+        return $this->hasMany(CoursePayment::class, 'section_id');
     }
 }

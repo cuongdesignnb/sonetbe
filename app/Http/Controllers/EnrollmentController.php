@@ -114,7 +114,7 @@ class EnrollmentController extends Controller
         $user = Auth::user();
 
         // Check if enrolled — always use numeric course ID
-        if (!$user->isEnrolledIn($course->id)) {
+        if (!$user->hasAnyAccessToCourse($course->id)) {
             return response()->json(['message' => 'Not enrolled'], 403);
         }
 
@@ -168,8 +168,8 @@ class EnrollmentController extends Controller
         $user = Auth::user();
         $lesson = \App\Models\Lesson::findOrFail($lessonId);
 
-        // Check if enrolled in the course
-        if (!$user->isEnrolledIn($lesson->course_id)) {
+        // Check if enrolled in the course or has access to the lesson
+        if (!$user->hasAccessToLesson($lesson->id)) {
             return response()->json(['message' => 'Not enrolled'], 403);
         }
 

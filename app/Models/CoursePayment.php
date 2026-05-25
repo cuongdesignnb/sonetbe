@@ -14,6 +14,7 @@ class CoursePayment extends Model
         'user_id',
         'duration_tier_id',
         'course_id',
+        'section_id',
         'ebook_id',
         'webinar_id',
         'enrollment_id',
@@ -30,6 +31,7 @@ class CoursePayment extends Model
     ];
 
     protected $casts = [
+        'section_id' => 'integer',
         'amount' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'original_amount' => 'decimal:2',
@@ -46,6 +48,11 @@ class CoursePayment extends Model
     public function course()
     {
         return $this->belongsTo(Course::class);
+    }
+
+    public function section()
+    {
+        return $this->belongsTo(CourseSection::class, 'section_id');
     }
 
     public function ebook()

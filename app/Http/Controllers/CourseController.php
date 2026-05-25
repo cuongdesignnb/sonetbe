@@ -112,6 +112,11 @@ class CourseController extends Controller
         }
         if ($user && method_exists($user, 'isEnrolledIn')) {
             $isEnrolled = $user->isEnrolledIn($course->id);
+            if ($course->sections) {
+                foreach ($course->sections as $section) {
+                    $section->setAttribute('is_enrolled', $user->hasAccessToSection($section->id));
+                }
+            }
         }
 
         // Filter duration tiers based on user permissions

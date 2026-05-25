@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Voucher;
 use App\Models\Course;
+use App\Models\CourseSection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
@@ -17,11 +18,17 @@ class VoucherController extends Controller
         $request->validate([
             'code' => 'required|string|max:50',
             'course_id' => 'required|exists:courses,id',
+            'section_id' => 'nullable|exists:course_sections,id',
         ]);
 
         $user = Auth::user();
         $code = strtoupper(trim($request->code));
         $course = Course::findOrFail($request->course_id);
+        
+        $section = null;
+        if ($request->section_id) {
+            $section = CourseSection::where('course_id', $course->id)->findOrFail($request->section_id);
+        }
 
         $voucher = Voucher::findByCode($code);
 
@@ -32,7 +39,7 @@ class VoucherController extends Controller
             ], 404);
         }
 
-        $orderAmount = (float) $course->price;
+        $orderAmount = $section ? (float) $section->price : (float) $course->price;
         $error = $voucher->getValidationError($orderAmount, $user->id, $course->id);
 
         if ($error) {

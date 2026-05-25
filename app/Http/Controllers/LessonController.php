@@ -320,7 +320,7 @@ class LessonController extends Controller
                 Log::warning("StreamVideo: Unauthorized guest access attempt for Lesson {$id}");
                 return response()->json(['message' => 'Unauthorized'], 401);
             }
-            if (!$user->isEnrolledIn($lesson->course_id)) {
+            if (!$user->hasAccessToLesson($lesson->id)) {
                 Log::warning("StreamVideo: Access denied for User {$user->id} to Lesson {$id}");
                 return response()->json(['message' => 'Access denied'], 403);
             }
@@ -569,7 +569,7 @@ class LessonController extends Controller
             
             $lesson = Lesson::findOrFail($id);
             $user = Auth::user();
-            if ($user && !$lesson->is_preview && !$user->isEnrolledIn($lesson->course_id)) {
+            if ($user && !$lesson->is_preview && !$user->hasAccessToLesson($lesson->id)) {
                 Log::warning("ProxyHLS: Access denied (Not enrolled) for User {$user->id}");
                 return response()->json(['message' => 'Access denied'], 403);
             }

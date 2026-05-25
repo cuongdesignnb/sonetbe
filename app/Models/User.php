@@ -65,12 +65,67 @@ class User extends Authenticatable implements MustVerifyEmail
         return $this->hasMany(LessonProgress::class);
     }
 
-    // Check if user is enrolled in a course
+    // Check if user is enrolled in the full course (lifetime or active duration tier)
     public function isEnrolledIn($courseId)
     {
         return $this->enrollments()
             ->where('course_id', $courseId)
             ->where('status', 'active')
+            ->whereNull('section_id')
+            ->where(function ($q) {
+                $q->whereNull('expires_at')
+                  ->orWhere('expires_at', '>', now());
+            })
+            ->exists();
+    }
+
+    // Check if user has access to a specific section (chapter)
+    public function hasAccessToSection($sectionId)
+    {
+        $section = CourseSection::find($sectionId);
+        if (!$section) return false;
+        
+        if ($this->isAdmin()) return true;
+        if ($this->isEnrolledIn($section->course_id)) return true;
+
+        return $this->enrollments()
+            ->where('course_id', $section->course_id)
+            ->where('section_id', $sectionId)
+            ->where('status', 'active')
+            ->where(function ($q) {
+                $q->whereNull('expires_at')
+                  ->orWhere('expires_at', '>', now());
+            })
+            ->exists();
+    }
+
+    // Check if user has access to a specific lesson
+    public function hasAccessToLesson($lessonId)
+    {
+        $lesson = Lesson::find($lessonId);
+        if (!$lesson) return false;
+        if ($lesson->is_preview) return true;
+        if ($this->isAdmin()) return true;
+
+        if ($lesson->section_id) {
+            return $this->hasAccessToSection($lesson->section_id);
+        }
+
+        return $this->isEnrolledIn($lesson->course_id);
+    }
+
+    // Check if user has any access to a course (enrolled in full course or at least one chapter)
+    public function hasAnyAccessToCourse($courseId)
+    {
+        if ($this->isAdmin()) return true;
+
+        return $this->enrollments()
+            ->where('course_id', $courseId)
+            ->where('status', 'active')
+            ->where(function ($q) {
+                $q->whereNull('expires_at')
+                  ->orWhere('expires_at', '>', now());
+            })
             ->exists();
     }
 

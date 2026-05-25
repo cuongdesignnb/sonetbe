@@ -13,6 +13,7 @@ class Enrollment extends Model
     protected $fillable = [
         'user_id',
         'course_id',
+        'section_id',
         'duration_tier_id',
         'status',
         'enrolled_at',
@@ -23,6 +24,7 @@ class Enrollment extends Model
     ];
 
     protected $casts = [
+        'section_id' => 'integer',
         'enrolled_at' => 'datetime',
         'completed_at' => 'datetime',
         'expires_at' => 'datetime',
@@ -38,6 +40,11 @@ class Enrollment extends Model
     public function course()
     {
         return $this->belongsTo(Course::class);
+    }
+
+    public function section()
+    {
+        return $this->belongsTo(CourseSection::class, 'section_id');
     }
 
     public function latestPayment()

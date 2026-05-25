@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Course;
+use App\Models\CourseSection;
 use App\Models\CourseDurationTier;
 use App\Models\CoursePayment;
 use App\Models\Enrollment;
@@ -20,32 +21,59 @@ class PaymentController extends Controller
         $course = Course::findByIdOrSlugOrFail($courseId);
         $user = Auth::user();
 
-        if ($user->isEnrolledIn($course->id)) {
-            return response()->json(['message' => 'Already enrolled'], 400);
-        }
-
-        // Resolve duration tier
-        $tier = null;
-        $durationTierId = $request->input('duration_tier_id');
-        if ($durationTierId) {
-            $tier = CourseDurationTier::where('course_id', $course->id)
-                ->where('id', $durationTierId)
-                ->where('is_active', true)
+        // 1. Resolve Section if provided
+        $section = null;
+        $sectionId = $request->input('section_id');
+        if ($sectionId) {
+            $section = CourseSection::where('course_id', $course->id)
+                ->where('id', $sectionId)
+                ->where('is_sellable', true)
                 ->first();
 
-            if (!$tier) {
-                return response()->json(['message' => 'Gói thời gian không hợp lệ hoặc đã bị vô hiệu hoá'], 400);
+            if (!$section) {
+                return response()->json(['message' => 'Chương học không hợp lệ hoặc đã bị dừng bán lẻ'], 400);
+            }
+
+            if ($user->hasAccessToSection($section->id)) {
+                return response()->json(['message' => 'Bạn đã sở hữu chương học này rồi'], 400);
+            }
+        } else {
+            // Full course check
+            if ($user->isEnrolledIn($course->id)) {
+                return response()->json(['message' => 'Already enrolled'], 400);
             }
         }
 
-        // Use tier price if available, otherwise course price
-        $originalPrice = $tier ? (float) $tier->price : (float) $course->price;
+        // 2. Resolve duration tier (for full course only)
+        $tier = null;
+        if (!$section) {
+            $durationTierId = $request->input('duration_tier_id');
+            if ($durationTierId) {
+                $tier = CourseDurationTier::where('course_id', $course->id)
+                    ->where('id', $durationTierId)
+                    ->where('is_active', true)
+                    ->first();
+
+                if (!$tier) {
+                    return response()->json(['message' => 'Gói thời gian không hợp lệ hoặc đã bị vô hiệu hoá'], 400);
+                }
+            }
+        }
+
+        // 3. Determine price
+        $originalPrice = 0;
+        if ($section) {
+            $originalPrice = (float) $section->price;
+        } else {
+            $originalPrice = $tier ? (float) $tier->price : (float) $course->price;
+        }
+
         $voucherCode = $request->input('voucher_code');
         $voucher = null;
         $discountAmount = 0;
         $finalAmount = $originalPrice;
 
-        // Validate and apply voucher if provided
+        // 4. Validate and apply voucher if provided
         if ($voucherCode) {
             $voucher = Voucher::findByCode($voucherCode);
             
@@ -53,7 +81,7 @@ class PaymentController extends Controller
                 return response()->json(['message' => 'Mã giảm giá không tồn tại'], 400);
             }
 
-            $voucherError = $voucher->getValidationError($originalPrice, $user->id);
+            $voucherError = $voucher->getValidationError($originalPrice, $user->id, $course->id);
             if ($voucherError) {
                 return response()->json(['message' => $voucherError], 400);
             }
@@ -62,13 +90,14 @@ class PaymentController extends Controller
             $finalAmount = max(0, $originalPrice - $discountAmount);
         }
 
-        // If course is free or fully discounted
+        // 5. If free or fully discounted
         if ($finalAmount <= 0) {
             try {
-                return DB::transaction(function () use ($user, $course, $voucher, $discountAmount, $originalPrice) {
+                return DB::transaction(function () use ($user, $course, $section, $tier, $voucher, $discountAmount) {
                     // Check if already enrolled
                     $existingEnrollment = Enrollment::where('user_id', $user->id)
                         ->where('course_id', $course->id)
+                        ->where('section_id', $section?->id)
                         ->where('status', 'active')
                         ->first();
                     
@@ -84,13 +113,14 @@ class PaymentController extends Controller
                         [
                             'user_id' => $user->id,
                             'course_id' => $course->id,
+                            'section_id' => $section?->id,
                         ],
                         [
                             'status' => 'active',
                             'enrolled_at' => now(),
                             'amount_paid' => 0,
-                            'duration_tier_id' => $tier?->id,
-                            'expires_at' => $tier && $tier->duration_days
+                            'duration_tier_id' => $section ? null : $tier?->id,
+                            'expires_at' => !$section && $tier && $tier->duration_days
                                 ? now()->addDays($tier->duration_days)
                                 : null,
                         ]
@@ -118,6 +148,7 @@ class PaymentController extends Controller
                 \Log::error('Free enrollment failed: ' . $e->getMessage(), [
                     'user_id' => $user->id,
                     'course_id' => $course->id,
+                    'section_id' => $section?->id,
                     'voucher_code' => $voucherCode,
                     'trace' => $e->getTraceAsString(),
                 ]);
@@ -128,10 +159,12 @@ class PaymentController extends Controller
             }
         }
 
+        // 6. Create or update pending enrollment
         $enrollment = Enrollment::firstOrCreate(
             [
                 'user_id' => $user->id,
                 'course_id' => $course->id,
+                'section_id' => $section?->id,
             ],
             [
                 'status' => 'pending',
@@ -143,11 +176,11 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Already enrolled'], 400);
         }
 
-        // Update enrollment amount if voucher changes price
         if ($enrollment->amount_paid != $finalAmount) {
             $enrollment->update(['amount_paid' => $finalAmount]);
         }
 
+        // 7. Create or update pending payment
         $payment = CoursePayment::where('enrollment_id', $enrollment->id)
             ->where('status', 'pending')
             ->latest('id')
@@ -155,9 +188,11 @@ class PaymentController extends Controller
 
         if (!$payment) {
             $payment = CoursePayment::create([
+                'product_type' => $section ? 'chapter' : 'course',
                 'user_id' => $user->id,
                 'course_id' => $course->id,
-                'duration_tier_id' => $tier?->id,
+                'section_id' => $section?->id,
+                'duration_tier_id' => $section ? null : $tier?->id,
                 'enrollment_id' => $enrollment->id,
                 'voucher_id' => $voucher?->id,
                 'original_amount' => $originalPrice,
@@ -167,7 +202,6 @@ class PaymentController extends Controller
                 'order_code' => 'TEMP-' . uniqid(),
             ]);
         } else {
-            // Update existing payment with voucher info
             $payment->update([
                 'voucher_id' => $voucher?->id,
                 'original_amount' => $originalPrice,
@@ -203,7 +237,7 @@ class PaymentController extends Controller
 
     public function status($paymentId)
     {
-        $payment = CoursePayment::with(['enrollment', 'voucher', 'course', 'invoiceRequest'])->findOrFail($paymentId);
+        $payment = CoursePayment::with(['enrollment', 'voucher', 'course', 'section', 'invoiceRequest'])->findOrFail($paymentId);
         $user = Auth::user();
 
         if ($payment->user_id !== $user->id) {
@@ -216,6 +250,7 @@ class PaymentController extends Controller
         return response()->json([
             'payment' => [
                 'id' => $payment->id,
+                'product_type' => $payment->product_type,
                 'status' => $payment->status,
                 'original_amount' => $payment->original_amount,
                 'discount_amount' => $payment->discount_amount,
@@ -237,6 +272,11 @@ class PaymentController extends Controller
                     'description' => $payment->course->short_description ?? $payment->course->description ?? null,
                     'thumbnail' => $payment->course->thumbnail,
                     'price' => $payment->course->price,
+                ] : null,
+                'section' => $payment->section ? [
+                    'id' => $payment->section->id,
+                    'title' => $payment->section->title,
+                    'price' => $payment->section->price,
                 ] : null,
             ],
             'invoice_request' => $payment->invoiceRequest,
