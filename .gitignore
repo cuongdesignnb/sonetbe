@@ -27,6 +27,7 @@ yarn-error.log*
 
 # Laravel specific
 /bootstrap/compiled.php
+/bootstrap/cache/*.php
 /app/storage/
 /public/uploads/
 /storage/logs/
