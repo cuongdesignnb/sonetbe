@@ -108,21 +108,19 @@
           <label class="label">
             <span>Giá bán (₫)</span>
             <input
-              v-model.number="form.price"
+              type="text"
+              :value="formatPriceInput(form.price)"
+              @input="onPriceInput($event, form, 'price')"
               class="input"
-              type="number"
-              min="0"
-              step="1000"
             />
           </label>
           <label class="label">
             <span>Giá gốc (₫)</span>
             <input
-              v-model.number="form.original_price"
+              type="text"
+              :value="formatPriceInput(form.original_price)"
+              @input="onPriceInput($event, form, 'original_price')"
               class="input"
-              type="number"
-              min="0"
-              step="1000"
             />
           </label>
         </div>
@@ -222,12 +220,18 @@ import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiFetch } from "../lib/api";
 import { useToast } from "../lib/toast";
+import { formatPriceInput, parsePriceInput } from "../lib/utils";
 import MediaPickerModal from "../components/MediaPickerModal.vue";
 import RichTextEditor from "../components/RichTextEditor.vue";
 
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
+
+function onPriceInput(e: Event, obj: any, field: string) {
+  const target = e.target as HTMLInputElement;
+  obj[field] = parsePriceInput(target.value);
+}
 
 const ebookId = computed(() => route.params.id as string);
 const isNew = computed(() => ebookId.value === "new");

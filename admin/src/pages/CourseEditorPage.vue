@@ -97,11 +97,10 @@
           <label class="label">
             <span>Giá</span>
             <input
-              v-model="form.price"
+              type="text"
+              :value="formatPriceInput(form.price)"
+              @input="onPriceInput($event, form, 'price')"
               class="input"
-              type="number"
-              min="0"
-              step="0.01"
               required
             />
           </label>
@@ -109,11 +108,10 @@
           <label class="label">
             <span>Giá gốc (trước giảm)</span>
             <input
-              v-model="form.original_price"
+              type="text"
+              :value="formatPriceInput(form.original_price)"
+              @input="onPriceInput($event, form, 'original_price')"
               class="input"
-              type="number"
-              min="0"
-              step="0.01"
               placeholder="Để trống nếu không giảm giá"
             />
           </label>
@@ -315,26 +313,24 @@
             </td>
             <td style="width: 150px">
               <input
-                v-model.number="s.price"
+                type="text"
+                :value="formatPriceInput(s.price)"
+                @input="onPriceInput($event, s, 'price')"
+                @change="updateSection(s)"
                 class="input input-sm"
-                type="number"
-                min="0"
-                step="1000"
                 style="text-align: right"
                 placeholder="0"
-                @change="updateSection(s)"
               />
             </td>
             <td style="width: 150px">
               <input
-                v-model.number="s.original_price"
+                type="text"
+                :value="formatPriceInput(s.original_price)"
+                @input="onPriceInput($event, s, 'original_price')"
+                @change="updateSection(s)"
                 class="input input-sm"
-                type="number"
-                min="0"
-                step="1000"
                 style="text-align: right"
                 placeholder="-"
-                @change="updateSection(s)"
               />
             </td>
             <td style="width: 120px; text-align: center">
@@ -668,22 +664,20 @@
           <label class="label" style="flex: 1">
             <span>Giá</span>
             <input
-              v-model.number="newTier.price"
+              type="text"
+              :value="formatPriceInput(newTier.price)"
+              @input="onPriceInput($event, newTier, 'price')"
               class="input"
-              type="number"
-              min="0"
-              step="1000"
               required
             />
           </label>
           <label class="label" style="flex: 1">
             <span>Giá gốc</span>
             <input
-              v-model.number="newTier.original_price"
+              type="text"
+              :value="formatPriceInput(newTier.original_price)"
+              @input="onPriceInput($event, newTier, 'original_price')"
               class="input"
-              type="number"
-              min="0"
-              step="1000"
               placeholder="Không bắt buộc"
             />
           </label>
@@ -749,25 +743,23 @@
             </td>
             <td style="text-align: right">
               <input
-                v-model.number="t.price"
-                class="input input-sm"
-                type="number"
-                min="0"
-                step="1000"
-                style="width: 120px; text-align: right"
+                type="text"
+                :value="formatPriceInput(t.price)"
+                @input="onPriceInput($event, t, 'price')"
                 @change="updateTier(t)"
+                class="input input-sm"
+                style="width: 120px; text-align: right"
               />
             </td>
             <td style="text-align: right">
               <input
-                v-model.number="t.original_price"
+                type="text"
+                :value="formatPriceInput(t.original_price)"
+                @input="onPriceInput($event, t, 'original_price')"
+                @change="updateTier(t)"
                 class="input input-sm"
-                type="number"
-                min="0"
-                step="1000"
                 style="width: 120px; text-align: right"
                 placeholder="-"
-                @change="updateTier(t)"
               />
             </td>
             <td style="text-align: center">
@@ -1114,6 +1106,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { apiFetch, apiForm, extractMessage, HttpError } from "../lib/api";
 import { useToast } from "../lib/toast";
+import { formatPriceInput, parsePriceInput } from "../lib/utils";
 import type {
   Category,
   Course,
@@ -1205,6 +1198,11 @@ const bunnyTotalPages = computed(() => {
 function selectAll(e: Event) {
   const el = e.target as HTMLInputElement;
   el.select();
+}
+
+function onPriceInput(e: Event, obj: any, field: string) {
+  const target = e.target as HTMLInputElement;
+  obj[field] = parsePriceInput(target.value);
 }
 
 const form = ref({

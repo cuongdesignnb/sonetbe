@@ -221,11 +221,20 @@
               <div class="form-group" style="flex: 1">
                 <label class="label">Giá trị giảm *</label>
                 <input
+                  v-if="form.discount_type === 'fixed'"
+                  type="text"
+                  :value="formatPriceInput(form.discount_value)"
+                  @input="onPriceInput($event, form, 'discount_value')"
+                  class="input"
+                  required
+                />
+                <input
+                  v-else
                   v-model.number="form.discount_value"
                   type="number"
                   class="input"
                   min="0"
-                  :max="form.discount_type === 'percent' ? 100 : undefined"
+                  max="100"
                   required
                 />
               </div>
@@ -235,10 +244,10 @@
               <div class="form-group" style="flex: 1">
                 <label class="label">Đơn tối thiểu (VNĐ)</label>
                 <input
-                  v-model.number="form.min_order_amount"
-                  type="number"
+                  type="text"
+                  :value="formatPriceInput(form.min_order_amount)"
+                  @input="onPriceInput($event, form, 'min_order_amount')"
                   class="input"
-                  min="0"
                 />
               </div>
               <div
@@ -248,10 +257,10 @@
               >
                 <label class="label">Giảm tối đa (VNĐ)</label>
                 <input
-                  v-model.number="form.max_discount"
-                  type="number"
+                  type="text"
+                  :value="formatPriceInput(form.max_discount)"
+                  @input="onPriceInput($event, form, 'max_discount')"
                   class="input"
-                  min="0"
                 />
               </div>
             </div>
@@ -411,7 +420,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { apiFetch, extractMessage, HttpError } from "../lib/api";
+import { formatPriceInput, parsePriceInput } from "../lib/utils";
 import type { Voucher } from "../lib/types";
+
+function onPriceInput(e: Event, obj: any, field: string) {
+  const target = e.target as HTMLInputElement;
+  obj[field] = parsePriceInput(target.value);
+}
 
 const vouchers = ref<Voucher[]>([]);
 const loading = ref(false);
