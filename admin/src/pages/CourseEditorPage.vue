@@ -286,37 +286,72 @@
       <table class="table" style="margin-top: 12px">
         <thead>
           <tr>
-            <th>Thứ tự</th>
+            <th style="width: 100px">Thứ tự</th>
             <th>Tiêu đề</th>
-            <th></th>
+            <th style="width: 150px">Giá bán lẻ</th>
+            <th style="width: 150px">Giá gốc (gạch)</th>
+            <th style="width: 120px; text-align: center">Bán lẻ?</th>
+            <th style="width: 100px"></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="s in sections" :key="s.id">
-            <td style="width: 120px">
+            <td style="width: 100px">
               <input
                 v-model.number="s.order"
-                class="input"
+                class="input input-sm"
                 type="number"
                 min="1"
+                style="text-align: center"
                 @change="updateSection(s)"
               />
             </td>
             <td>
               <input
                 v-model="s.title"
-                class="input"
+                class="input input-sm"
+                @change="updateSection(s)"
+              />
+            </td>
+            <td style="width: 150px">
+              <input
+                v-model.number="s.price"
+                class="input input-sm"
+                type="number"
+                min="0"
+                step="1000"
+                style="text-align: right"
+                placeholder="0"
+                @change="updateSection(s)"
+              />
+            </td>
+            <td style="width: 150px">
+              <input
+                v-model.number="s.original_price"
+                class="input input-sm"
+                type="number"
+                min="0"
+                step="1000"
+                style="text-align: right"
+                placeholder="-"
+                @change="updateSection(s)"
+              />
+            </td>
+            <td style="width: 120px; text-align: center">
+              <input
+                type="checkbox"
+                v-model="s.is_sellable"
                 @change="updateSection(s)"
               />
             </td>
             <td style="text-align: right; white-space: nowrap">
-              <button class="btn btn-danger" @click="deleteSection(s)">
+              <button class="btn btn-danger btn-sm" @click="deleteSection(s)">
                 Xóa
               </button>
             </td>
           </tr>
           <tr v-if="sections.length === 0">
-            <td colspan="3" class="muted">Chưa có chương nào</td>
+            <td colspan="6" class="muted">Chưa có chương nào</td>
           </tr>
         </tbody>
       </table>
@@ -1426,7 +1461,13 @@ async function updateSection(s: CourseSection) {
     await apiFetch(`/api/admin/sections/${s.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: s.title, order: s.order }),
+      body: JSON.stringify({
+        title: s.title,
+        order: s.order,
+        price: s.price,
+        original_price: s.original_price,
+        is_sellable: s.is_sellable,
+      }),
     });
     toastSuccess("Đã lưu chương.");
   } catch (e) {

@@ -40,6 +40,9 @@ class AdminSectionController extends Controller
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'order' => 'required|integer|min:1',
+            'price' => 'nullable|numeric|min:0',
+            'original_price' => 'nullable|numeric|min:0',
+            'is_sellable' => 'nullable|boolean',
         ]);
 
         if ($validator->fails()) {
@@ -70,6 +73,9 @@ class AdminSectionController extends Controller
             'title' => 'sometimes|required|string|max:255',
             'description' => 'nullable|string',
             'order' => 'sometimes|required|integer|min:1',
+            'price' => 'nullable|numeric|min:0',
+            'original_price' => 'nullable|numeric|min:0',
+            'is_sellable' => 'nullable|boolean',
         ]);
 
         if ($validator->fails()) {
