@@ -79,6 +79,25 @@ class User extends Authenticatable implements MustVerifyEmail
             ->exists();
     }
 
+    // Check if user is actually enrolled in a specific section (does not bypass for admin)
+    public function isEnrolledInSection($sectionId)
+    {
+        $section = CourseSection::find($sectionId);
+        if (!$section) return false;
+
+        if ($this->isEnrolledIn($section->course_id)) return true;
+
+        return $this->enrollments()
+            ->where('course_id', $section->course_id)
+            ->where('section_id', $sectionId)
+            ->where('status', 'active')
+            ->where(function ($q) {
+                $q->whereNull('expires_at')
+                  ->orWhere('expires_at', '>', now());
+            })
+            ->exists();
+    }
+
     // Check if user has access to a specific section (chapter)
     public function hasAccessToSection($sectionId)
     {

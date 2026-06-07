@@ -114,7 +114,7 @@ class CourseController extends Controller
             $isEnrolled = $user->isEnrolledIn($course->id);
             if ($course->sections) {
                 foreach ($course->sections as $section) {
-                    $section->setAttribute('is_enrolled', $user->hasAccessToSection($section->id));
+                    $section->setAttribute('is_enrolled', $user->isEnrolledInSection($section->id));
                 }
             }
         }
