@@ -10,7 +10,7 @@ class PlaybackSessionService
     private const TELEMETRY_PREFIX = 'video_playback_telemetry:';
 
     /** @return array{token:string,session_id:string,expires_at:int} */
-    public function issue(int $lessonId, ?int $userId, bool $preview): array
+    public function issue(int $lessonId, ?int $userId, bool $preview, ?string $streamHostname = null): array
     {
         $now = time();
         $ttl = (int) config('video.playback_session_ttl', 7200);
@@ -28,6 +28,7 @@ class PlaybackSessionService
             'expires_at' => min($expiresAt, $hardExpiresAt),
             'hard_expires_at' => $hardExpiresAt,
             'session_id' => $sessionId,
+            'stream_hostname' => $streamHostname !== null ? strtolower(trim($streamHostname)) : null,
         ];
         $remaining = max(1, $record['expires_at'] - $now);
 
