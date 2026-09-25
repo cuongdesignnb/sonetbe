@@ -5,27 +5,23 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Controller;
 use App\Models\Course;
 use App\Models\Lesson;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Http\Response; // Keep existing
-use Illuminate\Support\Facades\Log; // Add Log
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use GuzzleHttp\Client;
 use App\Services\SettingsService;
+use App\Services\Video\BunnyHlsRelayService;
+use App\Services\Video\PlaybackSessionService;
+use GuzzleHttp\Exception\ConnectException;
 
 class LessonController extends Controller
 {
-    // Constants for security
-    private const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
-    private const RATE_LIMIT_MAX_REQUESTS = 500; // HLS makes many requests
-    private const BLACKLIST_DURATION_SECONDS = 300; // 5 minutes
-    private const SIGNATURE_TTL_MS = 600000; // 10 minutes (video playback needs longer)
-    private const MAX_CHUNK_SIZE = 2 * 1024 * 1024; // 2MB - balance between protection and performance
-    private const SESSION_CONCURRENT_LIMIT = 50; // Max concurrent streams per user (HLS needs many)
-    private const SESSION_TTL_SECONDS = 10; // Session check window (shorter for HLS)
-
     public function store(Request $request, $courseId)
     {
         $course = Course::findOrFail($courseId);
@@ -293,18 +289,10 @@ class LessonController extends Controller
 
     private function buildBunnyStreamPlaylistUrl(string $videoId): string
     {
-        $libraryId = SettingsService::get('bunnycdn.video_library_id', config('bunnycdn.video_library_id'));
-        $host = SettingsService::get('bunnycdn.stream_hostname', config('bunnycdn.stream_hostname', 'iframe.mediadelivery.net'));
+        $host = SettingsService::get('bunnycdn.stream_hostname', config('bunnycdn.stream_hostname', ''));
         $host = is_string($host) ? trim($host) : '';
-        if ($host === '') {
-            $host = 'iframe.mediadelivery.net';
-        }
 
-        if ($libraryId) {
-            return "https://{$host}/{$videoId}/playlist.m3u8";
-        }
-
-        return "https://{$host}/{$videoId}/playlist.m3u8";
+        return app(BunnyHlsRelayService::class)->playlistUrl($host, $videoId) ?? '';
     }
 
     public function streamVideo($id)
@@ -383,48 +371,12 @@ class LessonController extends Controller
                 ], 403);
             }
 
-            // PRIMARY: Use Bunny embed URL when library ID is available (most reliable)
+            // Keep Bunny's player iframe as the normal primary route.
             if ($libraryId !== '') {
-                $embedUrl = "https://iframe.mediadelivery.net/embed/{$libraryId}/{$lesson->video_bunny_id}";
-                $embedUrl .= "?autoplay=false&loop=false&muted=false&preload=true&responsive=true";
-
-                Log::info("StreamVideo: Returning Bunny embed URL for lesson {$id}", [
-                    'embed_url' => $embedUrl,
-                    'video_bunny_id' => $lesson->video_bunny_id,
-                    'library_id' => $libraryId
-                ]);
-
-                return response()->json([
-                    'embed_url' => $embedUrl,
-                    'type' => 'bunny_embed'
-                ]);
+                return $this->bunnyPlaybackResponse($lesson, $libraryId);
             }
-            
-            // FALLBACK: Direct HLS when no library ID is available (needs stream hostname + token auth)
-            $streamHostname = SettingsService::get('bunnycdn.stream_hostname', config('bunnycdn.stream_hostname', ''));
-            $streamHostname = is_string($streamHostname) ? trim($streamHostname) : '';
-            $tokenAuthEnabled = (bool) SettingsService::get('bunnycdn.enable_token_auth', config('bunnycdn.enable_token_auth', false));
-            $tokenAuthKey = (string) SettingsService::get('bunnycdn.token_auth_key', config('bunnycdn.token_auth_key', ''));
-            $hasTokenAuth = $tokenAuthEnabled && $tokenAuthKey !== '';
-            
-            if ($streamHostname !== '' && $streamHostname !== 'iframe.mediadelivery.net' && $hasTokenAuth) {
-                $hlsUrl = "https://{$streamHostname}/{$lesson->video_bunny_id}/playlist.m3u8";
-                $hlsUrl = $this->applyBunnyStreamSignedUrl($hlsUrl, $lesson->video_bunny_id);
-
-                Log::info("StreamVideo: Returning Direct HLS URL for lesson {$id} (no library ID, using stream hostname)", [
-                    'hls_url' => $hlsUrl,
-                    'video_bunny_id' => $lesson->video_bunny_id
-                ]);
-
-                return response()->json([
-                    'video_url' => $hlsUrl,
-                    'type' => 'hls'
-                ]);
-            }
-
-            Log::error("StreamVideo: Bunny configuration incomplete for lesson {$id}. video_library_id='{$libraryId}', stream_hostname='{$streamHostname}', token_auth=" . ($hasTokenAuth ? 'yes' : 'no'));
             return response()->json([
-                'message' => 'Cấu hình Bunny Stream chưa đầy đủ. Cần điền Video Library ID trong Settings, hoặc bật Token Auth nếu dùng Direct HLS.',
+                'message' => 'Video playback configuration is unavailable.',
             ], 422);
         }
 
@@ -477,14 +429,7 @@ class LessonController extends Controller
                 ?: SettingsService::get('bunnycdn.video_library_id', config('bunnycdn.video_library_id'));
             $libraryId = is_string($libraryId) ? trim($libraryId) : '';
             if ($libraryId !== '') {
-                $embedHostname = SettingsService::get('bunnycdn.embed_hostname', config('bunnycdn.embed_hostname', ''));
-                $embedHostname = is_string($embedHostname) ? trim($embedHostname) : '';
-                if ($embedHostname === '') $embedHostname = 'iframe.mediadelivery.net';
-                $embedUrl = "https://{$embedHostname}/embed/{$libraryId}/{$lesson->video_bunny_id}";
-                return response()->json([
-                    'embed_url' => $embedUrl,
-                    'type' => 'bunny_embed'
-                ]);
+                return $this->bunnyPlaybackResponse($lesson, $libraryId);
             }
         }
 
@@ -505,6 +450,169 @@ class LessonController extends Controller
         }
 
         return response()->json(['message' => 'Video not available'], 404);
+    }
+
+    private function bunnyPlaybackResponse(Lesson $lesson, string $libraryId)
+    {
+        $embedHostname = SettingsService::get('bunnycdn.embed_hostname', config('bunnycdn.embed_hostname', 'iframe.mediadelivery.net'));
+        $embedHostname = is_string($embedHostname) ? strtolower(trim($embedHostname)) : '';
+        if (!filter_var($embedHostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)) {
+            $embedHostname = 'iframe.mediadelivery.net';
+        }
+
+        $embedUrl = 'https://' . $embedHostname . '/embed/' . rawurlencode($libraryId) . '/' . rawurlencode((string) $lesson->video_bunny_id);
+        $embedUrl .= '?autoplay=false&loop=false&muted=false&preload=true&responsive=true';
+        $primary = [
+            'type' => 'bunny_embed',
+            'url' => $embedUrl,
+            'origin' => 'https://' . $embedHostname,
+        ];
+        $fallback = null;
+        $sessionId = null;
+        $failoverConfigured = (bool) config('video.failover_enabled', false);
+        $forceProxy = (bool) config('video.failover_force_proxy', false);
+        $timeoutMs = (int) config('video.failover_timeout_ms', 10000);
+
+        if ($failoverConfigured) {
+            $streamHostname = SettingsService::get('bunnycdn.stream_hostname', config('bunnycdn.stream_hostname', ''));
+            $streamHostname = is_string($streamHostname) ? trim($streamHostname) : '';
+            $relay = app(BunnyHlsRelayService::class);
+            $playlistUrl = $relay->playlistUrl($streamHostname, (string) $lesson->video_bunny_id);
+
+            if ($playlistUrl !== null) {
+                try {
+                    $preview = (bool) $lesson->is_preview;
+                    $session = app(PlaybackSessionService::class)->issue(
+                        (int) $lesson->id,
+                        $preview ? null : (int) Auth::id(),
+                        $preview
+                    );
+                    $sessionId = $session['session_id'];
+                    $fallback = [
+                        'type' => 'hls_proxy',
+                        'url' => '/api/backend/lessons/' . $lesson->id . '/hls?' . http_build_query([
+                            'playback_token' => $session['token'],
+                        ], '', '&', PHP_QUERY_RFC3986),
+                    ];
+                } catch (\Throwable) {
+                    Log::warning('video_playback_session_issue_failed', [
+                        'lesson_id' => (int) $lesson->id,
+                        'error_category' => 'FALLBACK_TOKEN_ISSUE_ERROR',
+                    ]);
+                }
+            }
+        }
+
+        $forceProxyActive = $failoverConfigured && $forceProxy && $fallback !== null;
+        if ($forceProxyActive) {
+            $primary = $fallback;
+            $fallback = null;
+        }
+
+        return response()->json([
+            // Keep these legacy fields during the frontend rollout.
+            'embed_url' => $embedUrl,
+            'type' => 'bunny_embed',
+            'primary' => $primary,
+            'fallback' => $fallback,
+            'failover' => [
+                'enabled' => $failoverConfigured && ($forceProxyActive || $fallback !== null),
+                'timeout_ms' => max(1000, min(30000, $timeoutMs)),
+                'force_proxy' => $forceProxyActive,
+            ],
+            'playback_session_id' => $sessionId,
+        ]);
+    }
+
+    public function playbackEvent(Request $request, $id)
+    {
+        $lessonId = (int) $id;
+        $event = (string) $request->input('event', '');
+        $allowedEvents = [
+            'video_primary_requested',
+            'video_primary_ready',
+            'video_primary_timeout',
+            'video_primary_error',
+            'video_fallback_requested',
+            'video_fallback_ready',
+            'video_fallback_error',
+        ];
+        $sessionId = (string) $request->input('playback_session_id', '');
+        $playbackSessions = app(PlaybackSessionService::class);
+        $session = $playbackSessions->resolveTelemetrySession($sessionId, $lessonId);
+        if ($session === null) {
+            return response()->noContent(403);
+        }
+        $lesson = Lesson::query()->select(['id', 'course_id'])->find($lessonId);
+        if (!$lesson) {
+            return response()->noContent(403);
+        }
+
+        if (!in_array($event, $allowedEvents, true)) {
+            return response()->noContent(204);
+        }
+
+        $eventLimitKey = 'video-playback-telemetry:' . $sessionId;
+        if (RateLimiter::tooManyAttempts($eventLimitKey, 120)) {
+            return response()->noContent(204);
+        }
+        RateLimiter::hit($eventLimitKey, 60);
+
+        $allowedCategories = [
+            'PRIMARY_TIMEOUT',
+            'PRIMARY_IFRAME_ERROR',
+            'BUNNY_DNS_ERROR',
+            'BUNNY_CONNECT_TIMEOUT',
+            'BUNNY_HTTP_403',
+            'BUNNY_HTTP_404',
+            'BUNNY_HTTP_5XX',
+            'HLS_MANIFEST_ERROR',
+            'HLS_SEGMENT_ERROR',
+            'FALLBACK_TOKEN_INVALID',
+            'FALLBACK_TOKEN_EXPIRED',
+            'FALLBACK_UPSTREAM_ERROR',
+        ];
+        $errorCategory = (string) $request->input('error_category', '');
+        if (!in_array($errorCategory, $allowedCategories, true)) {
+            $errorCategory = '';
+        }
+        $provider = (string) $request->input('provider', '');
+        if (!in_array($provider, ['bunny_embed', 'hls_proxy', 'direct'], true)) {
+            $provider = 'unknown';
+        }
+
+        $userAgent = (string) $request->userAgent();
+        $browser = match (true) {
+            preg_match('/Edg\//i', $userAgent) === 1 => 'Edge',
+            preg_match('/Chrome\//i', $userAgent) === 1 => 'Chrome',
+            preg_match('/Firefox\//i', $userAgent) === 1 => 'Firefox',
+            preg_match('/Safari\//i', $userAgent) === 1 => 'Safari',
+            default => 'Other',
+        };
+        $platform = match (true) {
+            preg_match('/Android/i', $userAgent) === 1 => 'Android',
+            preg_match('/iPhone|iPad|iPod/i', $userAgent) === 1 => 'iOS',
+            preg_match('/Windows/i', $userAgent) === 1 => 'Windows',
+            preg_match('/Macintosh|Mac OS/i', $userAgent) === 1 => 'macOS',
+            preg_match('/Linux/i', $userAgent) === 1 => 'Linux',
+            default => 'Other',
+        };
+
+        $requestId = (string) Str::uuid();
+        Log::info('video_playback_event', [
+            'request_id' => $requestId,
+            'event' => $event,
+            'lesson_id' => $lessonId,
+            'course_id' => (int) $lesson->course_id,
+            'playback_session_id' => $sessionId,
+            'browser_family' => $browser,
+            'platform' => $platform,
+            'provider' => $provider,
+            'elapsed_ms' => max(0, min(3600000, (int) $request->input('elapsed_ms', 0))),
+            'error_category' => $errorCategory !== '' ? $errorCategory : null,
+        ]);
+
+        return response()->noContent();
     }
 
     private function buildVdoCipherEmbedHtml(string $videoId): ?string
@@ -564,200 +672,253 @@ class LessonController extends Controller
 
     public function proxyHls(Request $request, $id)
     {
+        $requestId = (string) Str::uuid();
+        $lessonId = (int) $id;
+        $playbackToken = (string) $request->query('playback_token', '');
+        $playbackSessions = app(PlaybackSessionService::class);
+
+        if (!(bool) config('video.failover_enabled', false)) {
+            return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 404);
+        }
+
         try {
-            Log::info("ProxyHLS Request - Lesson: $id, IP: " . $request->ip());
-            
-            $lesson = Lesson::findOrFail($id);
-            $user = Auth::user();
-            if ($user && !$lesson->is_preview && !$user->hasAccessToLesson($lesson->id)) {
-                Log::warning("ProxyHLS: Access denied (Not enrolled) for User {$user->id}");
-                return response()->json(['message' => 'Access denied'], 403);
+            $lesson = Lesson::find($lessonId);
+            if (!$lesson || !$lesson->video_bunny_id) {
+                return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 404);
             }
 
-            $clientIp = $this->getClientIp($request);
-            $userAgent = (string) $request->header('User-Agent', '');
-
-            // Security checks - protect against bulk downloads and simple tools
-            if ($this->isDownloadManager($userAgent)) {
-                Log::warning("ProxyHLS: Blocked Download Manager UA: $userAgent");
-                return response()->json(['message' => 'Download managers are not allowed'], 403);
+            $session = $playbackSessions->resolve($playbackToken, $lessonId);
+            if ($session === null) {
+                Log::warning('video_hls_relay_denied', [
+                    'request_id' => $requestId,
+                    'lesson_id' => $lessonId,
+                    'error_category' => 'FALLBACK_TOKEN_INVALID',
+                ]);
+                return response()->json(['message' => 'Playback session invalid or expired', 'request_id' => $requestId], 403);
             }
 
-            if ($this->isBlacklisted($clientIp)) {
-                Log::warning("ProxyHLS: Blocked Blacklisted IP: $clientIp");
-                return response()->json(['message' => 'IP address is blacklisted'], 403);
+            $isPreviewSession = (bool) ($session['preview'] ?? false);
+            if ($isPreviewSession) {
+                if (!$lesson->is_preview || ($session['user_id'] ?? null) !== null) {
+                    return response()->json(['message' => 'Access denied', 'request_id' => $requestId], 403);
+                }
+            } else {
+                $userId = (int) ($session['user_id'] ?? 0);
+                $user = $userId > 0 ? User::query()->find($userId) : null;
+                if (!$user || ($lesson->is_preview === false && !$user->hasAccessToLesson($lesson->id))) {
+                    Log::warning('video_hls_relay_denied', [
+                        'request_id' => $requestId,
+                        'lesson_id' => $lessonId,
+                        'playback_session_id' => (string) ($session['session_id'] ?? ''),
+                        'error_category' => 'LESSON_AUTHORIZATION_DENIED',
+                    ]);
+                    return response()->json(['message' => 'Access denied', 'request_id' => $requestId], 403);
+                }
             }
 
-            if (!$this->applyRateLimit($clientIp)) {
-                $this->addToBlacklist($clientIp);
-                Log::warning("ProxyHLS: Rate Limit Exceeded for IP: $clientIp");
-                return response()->json(['message' => 'Too many requests'], 429);
-            }
+            // Entitlement is rechecked before extending the session's sliding TTL.
+            $playbackSessions->touch($playbackToken, $session);
 
-            // Note: Browser extensions like Cốc Cốc Savior can still intercept requests
-            // Only DRM (Widevine/FairPlay) can fully protect against this
-
-            $timestamp = (string) $request->query('timestamp', '');
-            $signature = (string) $request->query('signature', '');
-            $path = (string) $request->query('path', '');
-
-            if ($timestamp === '' || $signature === '') {
-                Log::warning("ProxyHLS: Missing signature/timestamp params");
-                return response()->json(['message' => 'Missing signature'], 403);
-            }
-
-            if (!$this->verifySignature((string) $id, $timestamp, $signature, $path)) {
-                Log::warning("ProxyHLS: Invalid local signature.");
-                return response()->json(['message' => 'Invalid signature'], 403);
-            }
-
-            if (!$lesson->video_bunny_id) {
-                return response()->json(['message' => 'Video not available'], 404);
-            }
-
-            $baseUrl = $this->buildBunnyStreamPlaylistUrl($lesson->video_bunny_id);
-            $targetUrl = $this->resolveBunnyUrl($baseUrl, $path);
-
-            $baseHost = parse_url($baseUrl, PHP_URL_HOST);
-            $targetHost = parse_url($targetUrl, PHP_URL_HOST);
-            if (!$targetHost || ($baseHost && $targetHost !== $baseHost)) {
-                return response()->json(['message' => 'Invalid target host'], 403);
-            }
-
-            // Use Bunny Stream signed URL for HLS proxy
-            $targetUrl = $this->applyBunnyStreamSignedUrl($targetUrl, $lesson->video_bunny_id);
-
-            $headers = [];
-            if ($userAgent !== '') {
-                $headers['User-Agent'] = $userAgent;
-            }
-            $incomingReferer = (string) $request->header('referer', '');
-            $incomingOrigin = (string) $request->header('origin', '');
-            $siteUrl = (string) SettingsService::get('site.url', config('app.url'));
-            if ($incomingReferer !== '') {
-                $headers['Referer'] = $incomingReferer;
-            } elseif ($siteUrl !== '') {
-                $headers['Referer'] = $siteUrl;
-            }
-            if ($incomingOrigin !== '') {
-                $headers['Origin'] = $incomingOrigin;
-            } elseif ($siteUrl !== '') {
-                $headers['Origin'] = $siteUrl;
-            }
-
-            $client = new Client();
-            $upstream = $client->get($targetUrl, [
-                'http_errors' => false,
-                'timeout' => 15,
-                'connect_timeout' => 10,
-                'headers' => $headers,
-            ]);
-            $status = $upstream->getStatusCode();
-
-            if ($status >= 400) {
+            $sessionId = (string) ($session['session_id'] ?? '');
+            $sessionLimitKey = 'video-relay:session:' . $sessionId;
+            $ipHash = hash('sha256', (string) ($request->ip() ?: 'unknown'));
+            $ipLimitKey = 'video-relay:ip:' . $ipHash;
+            if (RateLimiter::tooManyAttempts($sessionLimitKey, 900)
+                || RateLimiter::tooManyAttempts($ipLimitKey, 3000)) {
+                $limitedKey = RateLimiter::tooManyAttempts($sessionLimitKey, 900) ? $sessionLimitKey : $ipLimitKey;
+                $retryAfter = max(1, RateLimiter::availableIn($limitedKey));
                 return response()->json([
-                    'message' => 'Upstream error',
-                    'status' => $status,
-                    'target_url' => $targetUrl,
-                    'base_url' => $baseUrl,
-                    'path' => $path,
-                    'upstream_body' => substr((string) $upstream->getBody(), 0, 500),
-                ], 502);
+                    'message' => 'Video relay temporarily unavailable',
+                    'request_id' => $requestId,
+                ], 429)->header('Retry-After', (string) $retryAfter);
+            }
+            RateLimiter::hit($sessionLimitKey, 60);
+            RateLimiter::hit($ipLimitKey, 60);
+
+            $streamHostname = SettingsService::get('bunnycdn.stream_hostname', config('bunnycdn.stream_hostname', ''));
+            $streamHostname = is_string($streamHostname) ? trim($streamHostname) : '';
+            $relay = app(BunnyHlsRelayService::class);
+            $baseUrl = $relay->playlistUrl($streamHostname, (string) $lesson->video_bunny_id);
+            $path = $request->query('path', '');
+            if (!is_string($path) || strlen($path) > 4096) {
+                $path = '';
+            }
+            $targetUrl = $path === ''
+                ? $baseUrl
+                : ($baseUrl !== null ? $relay->resolveResource($baseUrl, $path, $streamHostname) : null);
+
+            if ($targetUrl !== null
+                && !$relay->resourceBelongsToVideo($targetUrl, (string) $lesson->video_bunny_id)) {
+                Log::warning('video_hls_relay_denied', [
+                    'request_id' => $requestId,
+                    'lesson_id' => $lessonId,
+                    'playback_session_id' => (string) ($session['session_id'] ?? ''),
+                    'error_category' => 'TOKEN_VIDEO_RESOURCE_MISMATCH',
+                ]);
+                return response()->json(['message' => 'Access denied', 'request_id' => $requestId], 403);
+            }
+
+            if ($baseUrl === null || $targetUrl === null) {
+                Log::warning('video_hls_relay_failed', [
+                    'request_id' => $requestId,
+                    'lesson_id' => $lessonId,
+                    'playback_session_id' => $sessionId,
+                    'error_category' => 'HLS_RESOURCE_REJECTED',
+                ]);
+                return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 502);
+            }
+
+            $isPlaylist = str_ends_with(strtolower((string) parse_url($targetUrl, PHP_URL_PATH)), '.m3u8');
+            $signedTargetUrl = $this->applyBunnyStreamSignedUrl($targetUrl, (string) $lesson->video_bunny_id);
+            $siteUrl = rtrim((string) SettingsService::get('site.url', config('app.url')), '/');
+            $headers = [
+                'Accept' => '*/*',
+                'Accept-Encoding' => 'identity',
+                'User-Agent' => 'Sonet-Video-Relay/1.0',
+            ];
+            if ($siteUrl !== '') {
+                $headers['Referer'] = $siteUrl . '/';
+            }
+            $range = $request->header('Range');
+            if (is_string($range) && preg_match('/^bytes=\d*-\d*$/', $range)) {
+                $headers['Range'] = $range;
+            }
+
+            $client = $relay->upstreamClient();
+            $upstream = null;
+            for ($attempt = 0; $attempt < 2; $attempt++) {
+                try {
+                    $upstream = $client->request('GET', $signedTargetUrl, [
+                        'http_errors' => false,
+                        'allow_redirects' => false,
+                        'stream' => true,
+                        'timeout' => 30,
+                        'read_timeout' => 15,
+                        'connect_timeout' => 5,
+                        'headers' => $headers,
+                    ]);
+                    break;
+                } catch (ConnectException $exception) {
+                    if ($attempt === 0) {
+                        usleep(350000);
+                        continue;
+                    }
+
+                    Log::warning('video_hls_relay_failed', [
+                        'request_id' => $requestId,
+                        'lesson_id' => $lessonId,
+                        'playback_session_id' => $sessionId,
+                        'error_category' => 'BUNNY_CONNECT_TIMEOUT',
+                    ]);
+                    return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 502);
+                }
+            }
+
+            if ($upstream === null) {
+                return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 502);
+            }
+
+            $status = $upstream->getStatusCode();
+            if ($status < 200 || $status >= 300) {
+                $errorCategory = match ($status) {
+                    403 => 'BUNNY_HTTP_403',
+                    404 => 'BUNNY_HTTP_404',
+                    default => ($status >= 500 ? 'BUNNY_HTTP_5XX' : ($isPlaylist ? 'HLS_MANIFEST_ERROR' : 'HLS_SEGMENT_ERROR')),
+                };
+                Log::warning('video_hls_relay_failed', [
+                    'request_id' => $requestId,
+                    'lesson_id' => $lessonId,
+                    'playback_session_id' => $sessionId,
+                    'upstream_status' => $status,
+                    'error_category' => $errorCategory,
+                ]);
+                return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 502);
             }
 
             $contentType = $upstream->getHeaderLine('Content-Type');
-            $isPlaylist = str_contains($contentType, 'application/vnd.apple.mpegurl') || str_contains($contentType, 'application/x-mpegURL') || str_ends_with(strtolower(parse_url($targetUrl, PHP_URL_PATH) ?? ''), '.m3u8');
+            $headersOut = [
+                'Cache-Control' => 'private, no-store, no-cache, must-revalidate, max-age=0',
+                'Pragma' => 'no-cache',
+                'X-Content-Type-Options' => 'nosniff',
+            ];
 
-            if ($isPlaylist) {
-                $body = (string) $upstream->getBody();
-                $lines = preg_split("/\r?\n/", $body);
-                $proxyBase = "/api/backend/lessons/{$id}/hls";
-                $rewritten = [];
-
-                foreach ($lines as $line) {
-                    if (preg_match('/#EXT-X-KEY:.*URI="([^"]+)"/i', $line, $match)) {
-                        $uri = $match[1];
-                        $resolvedUri = $this->resolveBunnyUrl($targetUrl, $uri);
-                        $sig = $this->signToken((string) $id, $timestamp, $resolvedUri);
-                        $newUri = $proxyBase . "?timestamp={$timestamp}&signature={$sig}&path=" . urlencode($resolvedUri);
-                        $line = str_replace($uri, $newUri, $line);
-                    } elseif (preg_match('/#EXT-X-MAP:.*URI="([^"]+)"/i', $line, $match)) {
-                        $uri = $match[1];
-                        $resolvedUri = $this->resolveBunnyUrl($targetUrl, $uri);
-                        $sig = $this->signToken((string) $id, $timestamp, $resolvedUri);
-                        $newUri = $proxyBase . "?timestamp={$timestamp}&signature={$sig}&path=" . urlencode($resolvedUri);
-                        $line = str_replace($uri, $newUri, $line);
-                    } elseif (str_starts_with(trim($line), '#') || trim($line) === '') {
-                        // keep comments and empty lines
-                    } else {
-                        $uri = trim($line);
-                        $resolvedUri = $this->resolveBunnyUrl($targetUrl, $uri);
-                        $sig = $this->signToken((string) $id, $timestamp, $resolvedUri);
-                        $line = $proxyBase . "?timestamp={$timestamp}&signature={$sig}&path=" . urlencode($resolvedUri);
-                    }
-
-                    $rewritten[] = $line;
+            if ($isPlaylist || str_contains(strtolower($contentType), 'mpegurl')) {
+                $manifest = $upstream->getBody()->getContents();
+                if (strlen($manifest) > 4 * 1024 * 1024) {
+                    Log::warning('video_hls_relay_failed', [
+                        'request_id' => $requestId,
+                        'lesson_id' => $lessonId,
+                        'playback_session_id' => $sessionId,
+                        'error_category' => 'HLS_MANIFEST_ERROR',
+                    ]);
+                    return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 502);
                 }
 
-                return response(implode("\n", $rewritten), 200, [
-                    'Content-Type' => 'application/vnd.apple.mpegurl',
-                    'Cache-Control' => 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-                    'Pragma' => 'no-cache',
-                    'Expires' => '0',
-                    'X-Frame-Options' => 'SAMEORIGIN',
-                    'Content-Security-Policy' => "frame-ancestors 'self'",
-                    'X-Content-Type-Options' => 'nosniff',
-                ]);
+                $rewritten = $relay->rewritePlaylist(
+                    $manifest,
+                    $targetUrl,
+                    $streamHostname,
+                    '/api/backend/lessons/' . $lessonId . '/hls',
+                    $playbackToken
+                );
+                if ($rewritten === null) {
+                    Log::warning('video_hls_relay_failed', [
+                        'request_id' => $requestId,
+                        'lesson_id' => $lessonId,
+                        'playback_session_id' => $sessionId,
+                        'error_category' => 'HLS_MANIFEST_ERROR',
+                    ]);
+                    return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 502);
+                }
+
+                $headersOut['Content-Type'] = 'application/vnd.apple.mpegurl';
+                return response($rewritten, 200, $headersOut);
             }
 
-            // Generate challenge token for this response
-            $challengeToken = $this->generateChallengeToken($clientIp);
-
-            return response()->stream(function () use ($upstream) {
-                $stream = $upstream->getBody();
-                while (!$stream->eof()) {
-                    echo $stream->read(8192);
-                    if (connection_aborted()) {
-                        break;
-                    }
+            $headersOut['Content-Type'] = $contentType ?: 'application/octet-stream';
+            foreach (['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag', 'Last-Modified'] as $headerName) {
+                $value = $upstream->getHeaderLine($headerName);
+                if ($value !== '') {
+                    $headersOut[$headerName] = $value;
                 }
-            }, 200, [
-                'Content-Type' => $contentType ?: 'application/octet-stream',
-                'Cache-Control' => 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-                'Pragma' => 'no-cache',
-                'Expires' => '0',
-                'X-Frame-Options' => 'SAMEORIGIN',
-                'Content-Security-Policy' => "frame-ancestors 'self'",
-                'X-Challenge-Token' => $challengeToken,
-                'X-Content-Type-Options' => 'nosniff',
+            }
+            if (!isset($headersOut['Accept-Ranges'])) {
+                $headersOut['Accept-Ranges'] = 'bytes';
+            }
+
+            $body = $upstream->getBody();
+            return response()->stream(function () use ($body, $requestId, $lessonId, $sessionId) {
+                try {
+                    while (!$body->eof()) {
+                        if (connection_aborted()) {
+                            break;
+                        }
+                        $chunk = $body->read(65536);
+                        if ($chunk === '') {
+                            break;
+                        }
+                        echo $chunk;
+                        flush();
+                    }
+                } catch (\Throwable) {
+                    Log::warning('video_hls_relay_stream_interrupted', [
+                        'request_id' => $requestId,
+                        'lesson_id' => $lessonId,
+                        'playback_session_id' => $sessionId,
+                        'error_category' => 'HLS_SEGMENT_ERROR',
+                    ]);
+                } finally {
+                    $body->close();
+                }
+            }, $status, $headersOut);
+        } catch (\Throwable) {
+            Log::warning('video_hls_relay_failed', [
+                'request_id' => $requestId,
+                'lesson_id' => $lessonId,
+                'error_category' => 'FALLBACK_UPSTREAM_ERROR',
             ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'message' => 'Proxy error',
-                'error' => $e->getMessage(),
-            ], 502);
+            return response()->json(['message' => 'Video relay temporarily unavailable', 'request_id' => $requestId], 502);
         }
-    }
-
-    private function resolveBunnyUrl(string $baseUrl, string $path): string
-    {
-        if ($path === '') {
-            return $baseUrl;
-        }
-
-        if (preg_match('#^https?://#i', $path)) {
-            return $path;
-        }
-
-        $scheme = parse_url($baseUrl, PHP_URL_SCHEME) ?: 'https';
-        $host = parse_url($baseUrl, PHP_URL_HOST) ?: '';
-        $port = parse_url($baseUrl, PHP_URL_PORT);
-        $basePath = parse_url($baseUrl, PHP_URL_PATH) ?: '/';
-
-        $dir = rtrim(dirname($basePath), '/') . '/';
-        $portPart = $port ? ':' . $port : '';
-
-        return $scheme . '://' . $host . $portPart . $dir . ltrim($path, '/');
     }
 
     /**
@@ -794,45 +955,6 @@ class LessonController extends Controller
         $port = isset($parts['port']) ? ':' . $parts['port'] : '';
         $path = $parts['path'] ?? '/';
         $query = $parts['query'] ?? '';
-
-        $params = [];
-        if ($query !== '') {
-            parse_str($query, $params);
-        }
-        $params['token'] = $token;
-        $params['expires'] = $expires;
-
-        $newQuery = http_build_query($params);
-
-        return $scheme . '://' . $host . $port . $path . ($newQuery !== '' ? '?' . $newQuery : '');
-    }
-
-    /**
-     * Apply CDN Pull Zone token authentication
-     * This is for direct CDN URLs, not for Bunny Stream
-     */
-    private function applyBunnyTokenAuth(string $url): string
-    {
-        $enabled = (bool) SettingsService::get('bunnycdn.enable_token_auth', config('bunnycdn.enable_token_auth', false));
-        $key = (string) SettingsService::get('bunnycdn.token_auth_key', config('bunnycdn.token_auth_key', ''));
-        if (!$enabled || $key === '') {
-            return $url;
-        }
-
-        $ttl = (int) SettingsService::get('bunnycdn.token_ttl', config('bunnycdn.token_ttl', 3600));
-        $ttl = max(60, $ttl);
-        $expires = time() + $ttl;
-
-        $parts = parse_url($url);
-        $scheme = $parts['scheme'] ?? 'https';
-        $host = $parts['host'] ?? '';
-        $port = isset($parts['port']) ? ':' . $parts['port'] : '';
-        $path = $parts['path'] ?? '/';
-        $query = $parts['query'] ?? '';
-
-        // BunnyCDN token auth uses HMAC SHA256 of path + expires
-        $hash = hash_hmac('sha256', $path . $expires, $key, true);
-        $token = rtrim(strtr(base64_encode($hash), '+/', '-_'), '=');
 
         $params = [];
         if ($query !== '') {
@@ -915,189 +1037,13 @@ class LessonController extends Controller
         }, $statusCode, $headers);
     }
 
-    private function isDownloadManager(string $userAgent): bool
-    {
-        $patterns = [
-            '/idm\s*\d*|internet\s*download\s*manager/i',
-            '/IDM\+\((\d+\.\d+)\)/',
-            '/freedownloadmanager|fdm/i',
-            '/download\s*master/i',
-            '/jdownloader/i',
-            '/getright/i',
-            '/wget|curl/i',
-            '/orbit|eagleget|netants/i',
-            '/flashget|thunder|xunlei/i',
-            '/download\s*accelerator|dap/i',
-            '/manager\/[0-9]+/i',
-        ];
-
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $userAgent)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function getClientIp(Request $request): string
-    {
-        $forwarded = $request->header('x-forwarded-for');
-        if (is_string($forwarded) && $forwarded !== '') {
-            return trim(explode(',', $forwarded)[0]);
-        }
-        return (string) $request->ip();
-    }
-
-    private function isAllowedOrigin(string $host, string $referer, string $origin): bool
-    {
-        // Allow if no referer/origin (direct requests, some players)
-        if ($referer === '' && $origin === '') {
-            return true;
-        }
-
-        // Extract base domain from host (e.g., sonetadmin.cuongdesign.net -> cuongdesign.net)
-        $hostParts = explode('.', $host);
-        $baseDomain = count($hostParts) >= 2 
-            ? $hostParts[count($hostParts) - 2] . '.' . $hostParts[count($hostParts) - 1]
-            : $host;
-
-        // Check if referer or origin contains the base domain
-        if ($referer !== '' && str_contains($referer, $baseDomain)) {
-            return true;
-        }
-        if ($origin !== '' && str_contains($origin, $baseDomain)) {
-            return true;
-        }
-
-        // Also allow exact host match
-        if ($referer !== '' && str_contains($referer, $host)) {
-            return true;
-        }
-        if ($origin !== '' && str_contains($origin, $host)) {
-            return true;
-        }
-
-        return false;
-    }
-
-    private function verifySignature(string $id, string $timestamp, string $signature, string $path = ''): bool
-    {
-        $secret = env('VIDEO_SECRET') ?: config('app.key');
-        if (is_string($secret) && str_starts_with($secret, 'base64:')) {
-            $secret = base64_decode(substr($secret, 7));
-        }
-
-        if (!$secret) {
-            return false;
-        }
-
-        $message = $id . '|' . $timestamp . '|' . $path;
-        $expected = hash_hmac('sha256', $message, $secret);
-        if (!hash_equals($expected, $signature)) {
-            return false;
-        }
-
-        $tokenTime = (int) $timestamp;
-        if ($tokenTime <= 0) {
-            return false;
-        }
-
-        $now = (int) (microtime(true) * 1000);
-        return ($now - $tokenTime) <= self::SIGNATURE_TTL_MS;
-    }
-
-    private function signToken(string $id, string $timestamp, string $path = ''): string
-    {
-        $secret = env('VIDEO_SECRET') ?: config('app.key');
-        if (is_string($secret) && str_starts_with($secret, 'base64:')) {
-            $secret = base64_decode(substr($secret, 7));
-        }
-
-        $message = $id . '|' . $timestamp . '|' . $path;
-        return hash_hmac('sha256', $message, $secret ?: '');
-    }
-
-    private function applyRateLimit(string $ip): bool
-    {
-        $key = 'video_rate:' . $ip;
-        $windowMs = self::RATE_LIMIT_WINDOW_MS;
-        $maxRequests = self::RATE_LIMIT_MAX_REQUESTS;
-
-        $record = Cache::get($key);
-        $now = (int) (microtime(true) * 1000);
-
-        if (!$record || !is_array($record)) {
-            Cache::put($key, ['count' => 1, 'resetAt' => $now + $windowMs], 120);
-            return true;
-        }
-
-        if ($now > ($record['resetAt'] ?? 0)) {
-            Cache::put($key, ['count' => 1, 'resetAt' => $now + $windowMs], 120);
-            return true;
-        }
-
-        if (($record['count'] ?? 0) >= $maxRequests) {
-            return false;
-        }
-
-        $record['count'] = ($record['count'] ?? 0) + 1;
-        Cache::put($key, $record, 120);
-        return true;
-    }
-
-    private function isBlacklisted(string $ip): bool
-    {
-        return Cache::has('video_blacklist:' . $ip);
-    }
-
-    private function addToBlacklist(string $ip): void
-    {
-        Cache::put('video_blacklist:' . $ip, true, self::BLACKLIST_DURATION_SECONDS);
-    }
-
-    /**
-     * Check concurrent sessions to detect download tools
-     * Download managers often open many parallel connections
-     */
-    private function checkConcurrentSessions(string $ip): bool
-    {
-        $key = 'video_sessions:' . $ip;
-        $sessions = Cache::get($key, []);
-        $now = time();
-
-        // Clean up expired sessions
-        $sessions = array_filter($sessions, fn($ts) => ($now - $ts) < self::SESSION_TTL_SECONDS);
-
-        // Check if too many concurrent sessions
-        if (count($sessions) >= self::SESSION_CONCURRENT_LIMIT) {
-            return false;
-        }
-
-        // Add current session
-        $sessions[] = $now;
-        Cache::put($key, $sessions, self::SESSION_TTL_SECONDS);
-
-        return true;
-    }
-
-    /**
-     * Generate challenge token for response
-     * This makes it harder for download managers to process responses
-     */
-    private function generateChallengeToken(string $clientIp): string
-    {
-        $seed = $clientIp . microtime(true) . mt_rand();
-        return substr(hash('sha256', $seed), 0, 32);
-    }
-
     /**
      * Generate chunk token for next chunk request
      * This ensures chunks must be requested in sequence from same client
      */
     private function generateChunkToken(string $clientIp, string $userAgent, int $chunkIndex): string
     {
-        $secret = env('VIDEO_SECRET') ?: config('app.key');
+        $secret = config('video.video_secret') ?: config('app.key');
         if (is_string($secret) && str_starts_with($secret, 'base64:')) {
             $secret = base64_decode(substr($secret, 7));
         }
