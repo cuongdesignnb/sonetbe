@@ -474,8 +474,7 @@ class LessonController extends Controller
         $timeoutMs = (int) config('video.failover_timeout_ms', 10000);
 
         if ($failoverConfigured) {
-            $streamHostname = SettingsService::get('bunnycdn.stream_hostname', config('bunnycdn.stream_hostname', ''));
-            $streamHostname = is_string($streamHostname) ? trim($streamHostname) : '';
+            $streamHostname = $this->resolveBunnyStreamHostname($libraryId);
             $relay = app(BunnyHlsRelayService::class);
             $playlistUrl = $relay->playlistUrl($streamHostname, (string) $lesson->video_bunny_id);
 
@@ -485,7 +484,8 @@ class LessonController extends Controller
                     $session = app(PlaybackSessionService::class)->issue(
                         (int) $lesson->id,
                         $preview ? null : (int) Auth::id(),
-                        $preview
+                        $preview,
+                        $streamHostname
                     );
                     $sessionId = $session['session_id'];
                     $fallback = [
@@ -735,8 +735,19 @@ class LessonController extends Controller
             RateLimiter::hit($sessionLimitKey, 60);
             RateLimiter::hit($ipLimitKey, 60);
 
-            $streamHostname = SettingsService::get('bunnycdn.stream_hostname', config('bunnycdn.stream_hostname', ''));
-            $streamHostname = is_string($streamHostname) ? trim($streamHostname) : '';
+            $libraryId = $lesson->video_bunny_library_id
+                ?: SettingsService::get('bunnycdn.video_library_id', config('bunnycdn.video_library_id'));
+            $libraryId = is_string($libraryId) || is_numeric($libraryId) ? trim((string) $libraryId) : '';
+
+            // The playback session is bound to the exact Bunny Pull Zone resolved for
+            // this lesson's library. Do not use one global Stream hostname: Sonet has
+            // multiple Bunny libraries, each backed by a different Pull Zone.
+            $streamHostname = trim((string) ($session['stream_hostname'] ?? ''));
+            if ($streamHostname === '' && $libraryId !== '') {
+                // Compatibility path for sessions issued before per-library binding.
+                $streamHostname = $this->resolveBunnyStreamHostname($libraryId);
+            }
+
             $relay = app(BunnyHlsRelayService::class);
             $baseUrl = $relay->playlistUrl($streamHostname, (string) $lesson->video_bunny_id);
             $path = $request->query('path', '');
@@ -926,6 +937,121 @@ class LessonController extends Controller
      * Bunny Stream uses a different token format than CDN Pull Zones
      * Format: SHA256(token_key + video_id + expiration_time) as hex
      */
+    /**
+     * Resolve the system Pull Zone hostname for a Bunny Stream library.
+     *
+     * Sonet uses multiple Bunny libraries and each library has its own Pull Zone,
+     * so a single global stream hostname cannot safely be used for HLS relay.
+     * The account API is queried only on a cache miss and the resolved hostname is
+     * cached for 24 hours. No credential or signed URL is logged.
+     */
+    private function resolveBunnyStreamHostname(string $libraryId): string
+    {
+        $libraryId = trim($libraryId);
+        if ($libraryId === '' || !preg_match('/^\d+$/', $libraryId)) {
+            return '';
+        }
+
+        $globalLibraryId = trim((string) SettingsService::get(
+            'bunnycdn.video_library_id',
+            config('bunnycdn.video_library_id', '')
+        ));
+        $globalHostname = trim((string) SettingsService::get(
+            'bunnycdn.stream_hostname',
+            config('bunnycdn.stream_hostname', '')
+        ));
+
+        // Preserve the validated configured hostname for the configured default
+        // library and avoid an unnecessary Bunny API request.
+        if ($libraryId === $globalLibraryId && $this->isSafeBunnyStreamHostname($globalHostname)) {
+            return strtolower($globalHostname);
+        }
+
+        $cacheKey = 'bunny:stream-hostname:library:' . $libraryId;
+
+        return (string) Cache::remember($cacheKey, now()->addHours(24), function () use ($libraryId): string {
+            $accountApiKey = trim((string) SettingsService::get(
+                'bunnycdn.api_key',
+                config('bunnycdn.api_key', '')
+            ));
+            if ($accountApiKey === '') {
+                return '';
+            }
+
+            try {
+                $client = new Client([
+                    'timeout' => 15,
+                    'connect_timeout' => 5,
+                ]);
+
+                $libraryResponse = $client->get(
+                    'https://api.bunny.net/videolibrary/' . rawurlencode($libraryId),
+                    [
+                        'headers' => [
+                            'AccessKey' => $accountApiKey,
+                            'Accept' => 'application/json',
+                        ],
+                    ]
+                );
+
+                $library = json_decode((string) $libraryResponse->getBody(), true);
+                $pullZoneId = is_array($library)
+                    ? ($library['PullZoneId'] ?? $library['pullZoneId'] ?? null)
+                    : null;
+
+                if (!is_numeric($pullZoneId)) {
+                    return '';
+                }
+
+                $pullZoneResponse = $client->get(
+                    'https://api.bunny.net/pullzone/' . rawurlencode((string) $pullZoneId),
+                    [
+                        'headers' => [
+                            'AccessKey' => $accountApiKey,
+                            'Accept' => 'application/json',
+                        ],
+                    ]
+                );
+
+                $pullZone = json_decode((string) $pullZoneResponse->getBody(), true);
+                $hostnames = is_array($pullZone)
+                    ? ($pullZone['Hostnames'] ?? $pullZone['hostnames'] ?? [])
+                    : [];
+
+                foreach (is_array($hostnames) ? $hostnames : [] as $hostname) {
+                    if (!is_array($hostname)) {
+                        continue;
+                    }
+
+                    $isSystem = (bool) ($hostname['IsSystemHostname'] ?? $hostname['isSystemHostname'] ?? false);
+                    $value = trim((string) ($hostname['Value'] ?? $hostname['value'] ?? ''));
+
+                    if ($isSystem && $this->isSafeBunnyStreamHostname($value)) {
+                        return strtolower($value);
+                    }
+                }
+            } catch (\Throwable $exception) {
+                Log::warning('bunny_stream_hostname_resolve_failed', [
+                    'library_id' => $libraryId,
+                    'error_category' => 'BUNNY_PULL_ZONE_RESOLVE_ERROR',
+                ]);
+            }
+
+            return '';
+        });
+    }
+
+    private function isSafeBunnyStreamHostname(string $hostname): bool
+    {
+        $hostname = strtolower(rtrim(trim($hostname), '.'));
+
+        return $hostname !== ''
+            && $hostname !== 'iframe.mediadelivery.net'
+            && !filter_var($hostname, FILTER_VALIDATE_IP)
+            && filter_var($hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false
+            && str_ends_with($hostname, '.b-cdn.net');
+    }
+
     private function applyBunnyStreamSignedUrl(string $url, string $videoId): string
     {
         $enabled = (bool) SettingsService::get('bunnycdn.enable_token_auth', config('bunnycdn.enable_token_auth', false));
