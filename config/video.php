@@ -9,4 +9,7 @@ return [
     'failover_force_proxy' => filter_var(env('VIDEO_FAILOVER_FORCE_PROXY', false), FILTER_VALIDATE_BOOLEAN),
     'playback_session_ttl' => max(300, min(14400, (int) env('VIDEO_PLAYBACK_SESSION_TTL', 7200))),
     'playback_session_max_lifetime' => 14400,
+    'relay_base_url' => rtrim((string) env('VIDEO_RELAY_BASE_URL', ''), '/'),
+    'relay_secret' => (string) env('SONET_RELAY_SECRET', ''),
+    'relay_token_ttl' => max(300, min(14400, (int) env('VIDEO_RELAY_TOKEN_TTL', 3600))),
 ];
