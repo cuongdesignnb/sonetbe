@@ -474,31 +474,47 @@ class LessonController extends Controller
         $timeoutMs = (int) config('video.failover_timeout_ms', 10000);
 
         if ($failoverConfigured) {
-            $streamHostname = $this->resolveBunnyStreamHostname($libraryId);
-            $relay = app(BunnyHlsRelayService::class);
-            $playlistUrl = $relay->playlistUrl($streamHostname, (string) $lesson->video_bunny_id);
+            // Prefer the Cloudflare Worker data-plane when configured. This keeps
+            // video bandwidth off the Sonet application server. The signed URL is
+            // issued only after the existing lesson authorization has passed.
+            $workerRelayUrl = $this->buildWorkerRelayUrl(
+                $libraryId,
+                (string) $lesson->video_bunny_id
+            );
 
-            if ($playlistUrl !== null) {
-                try {
-                    $preview = (bool) $lesson->is_preview;
-                    $session = app(PlaybackSessionService::class)->issue(
-                        (int) $lesson->id,
-                        $preview ? null : (int) Auth::id(),
-                        $preview,
-                        $streamHostname
-                    );
-                    $sessionId = $session['session_id'];
-                    $fallback = [
-                        'type' => 'hls_proxy',
-                        'url' => '/api/backend/lessons/' . $lesson->id . '/hls?' . http_build_query([
-                            'playback_token' => $session['token'],
-                        ], '', '&', PHP_QUERY_RFC3986),
-                    ];
-                } catch (\Throwable) {
-                    Log::warning('video_playback_session_issue_failed', [
-                        'lesson_id' => (int) $lesson->id,
-                        'error_category' => 'FALLBACK_TOKEN_ISSUE_ERROR',
-                    ]);
+            if ($workerRelayUrl !== null) {
+                $fallback = [
+                    'type' => 'hls_proxy',
+                    'url' => $workerRelayUrl,
+                ];
+            } else {
+                // Compatibility fallback: use the existing local Laravel relay.
+                $streamHostname = $this->resolveBunnyStreamHostname($libraryId);
+                $relay = app(BunnyHlsRelayService::class);
+                $playlistUrl = $relay->playlistUrl($streamHostname, (string) $lesson->video_bunny_id);
+
+                if ($playlistUrl !== null) {
+                    try {
+                        $preview = (bool) $lesson->is_preview;
+                        $session = app(PlaybackSessionService::class)->issue(
+                            (int) $lesson->id,
+                            $preview ? null : (int) Auth::id(),
+                            $preview,
+                            $streamHostname
+                        );
+                        $sessionId = $session['session_id'];
+                        $fallback = [
+                            'type' => 'hls_proxy',
+                            'url' => '/api/backend/lessons/' . $lesson->id . '/hls?' . http_build_query([
+                                'playback_token' => $session['token'],
+                            ], '', '&', PHP_QUERY_RFC3986),
+                        ];
+                    } catch (\Throwable) {
+                        Log::warning('video_playback_session_issue_failed', [
+                            'lesson_id' => (int) $lesson->id,
+                            'error_category' => 'FALLBACK_TOKEN_ISSUE_ERROR',
+                        ]);
+                    }
                 }
             }
         }
@@ -522,6 +538,39 @@ class LessonController extends Controller
             ],
             'playback_session_id' => $sessionId,
         ]);
+    }
+
+    private function buildWorkerRelayUrl(string $libraryId, string $videoId): ?string
+    {
+        $baseUrl = rtrim(trim((string) config('video.relay_base_url', '')), '/');
+        $secret = (string) config('video.relay_secret', '');
+
+        if ($baseUrl === '' || $secret === ''
+            || !preg_match('/^\\d+$/', $libraryId)
+            || !preg_match('/^[A-Za-z0-9_-]{1,128}$/', $videoId)) {
+            return null;
+        }
+
+        $parts = parse_url($baseUrl);
+        if (!is_array($parts)
+            || strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
+            || empty($parts['host'])) {
+            return null;
+        }
+
+        $ttl = max(300, min(14400, (int) config('video.relay_token_ttl', 3600)));
+        $expires = time() + $ttl;
+        $message = $libraryId . ':' . $videoId . ':' . $expires;
+        $signature = hash_hmac('sha256', $message, $secret);
+
+        return $baseUrl
+            . '/v/' . rawurlencode($libraryId)
+            . '/' . rawurlencode($videoId)
+            . '/playlist.m3u8?'
+            . http_build_query([
+                'exp' => $expires,
+                'sig' => $signature,
+            ], '', '&', PHP_QUERY_RFC3986);
     }
 
     public function playbackEvent(Request $request, $id)
