@@ -558,9 +558,20 @@ class LessonController extends Controller
             return null;
         }
 
+        // Resolve the real Bunny system Pull Zone for this lesson's library.
+        // This removes the need to hardcode every library in the Worker.
+        $streamHostname = $this->resolveBunnyStreamHostname($libraryId);
+        if (!$this->isSafeBunnyStreamHostname($streamHostname)) {
+            return null;
+        }
+        $streamHostname = strtolower(rtrim($streamHostname, '.'));
+
         $ttl = max(300, min(14400, (int) config('video.relay_token_ttl', 3600)));
         $expires = time() + $ttl;
-        $message = $libraryId . ':' . $videoId . ':' . $expires;
+
+        // Bind the hostname into the HMAC so the Worker can safely accept
+        // dynamically resolved Bunny libraries without becoming an open proxy.
+        $message = $libraryId . ':' . $videoId . ':' . $streamHostname . ':' . $expires;
         $signature = hash_hmac('sha256', $message, $secret);
 
         return $baseUrl
@@ -568,6 +579,7 @@ class LessonController extends Controller
             . '/' . rawurlencode($videoId)
             . '/playlist.m3u8?'
             . http_build_query([
+                'host' => $streamHostname,
                 'exp' => $expires,
                 'sig' => $signature,
             ], '', '&', PHP_QUERY_RFC3986);
