@@ -206,7 +206,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // Student dashboard
             $stats = [
                 'enrolled_courses' => $user->enrollments()->where('status', 'active')->count(),
-                'completed_courses' => $user->enrollments()->where('status', 'completed')->count(),
+                'completed_courses' => $user->enrollments()->whereNotNull('completed_at')->count(),
                 'total_learning_time' => $user->lessonProgress()->sum('watched_duration')
             ];
         }
@@ -301,6 +301,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // Enrollments
         Route::get('/enrollments', [AdminEnrollmentController::class, 'index']);
         Route::post('/enrollments/manual', [AdminEnrollmentController::class, 'manualEnroll']);
+        Route::post('/enrollments/bulk', [AdminEnrollmentController::class, 'bulkEnroll']);
         Route::get('/dashboard/stats', [AdminEnrollmentController::class, 'stats']);
 
         // Vouchers

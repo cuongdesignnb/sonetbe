@@ -93,7 +93,19 @@ class PaymentController extends Controller
         // 5. If free or fully discounted
         if ($finalAmount <= 0) {
             try {
-                return DB::transaction(function () use ($user, $course, $section, $tier, $voucher, $discountAmount) {
+                return DB::transaction(function () use ($user, $course, $section, $tier, $voucher, $discountAmount, $originalPrice) {
+                    // Re-check the voucher under a row lock so two simultaneous
+                    // checkouts cannot both consume the last remaining use.
+                    if ($voucher) {
+                        $voucher = Voucher::whereKey($voucher->id)->lockForUpdate()->first();
+                        $voucherError = $voucher
+                            ? $voucher->getValidationError($originalPrice, $user->id, $course->id)
+                            : 'Mã giảm giá không tồn tại';
+                        if ($voucherError) {
+                            return response()->json(['message' => $voucherError], 400);
+                        }
+                    }
+
                     // Check if already enrolled
                     $existingEnrollment = Enrollment::where('user_id', $user->id)
                         ->where('course_id', $course->id)

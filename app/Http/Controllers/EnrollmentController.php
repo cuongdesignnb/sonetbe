@@ -213,15 +213,17 @@ class EnrollmentController extends Controller
 
         $progress->save();
 
-        // Check if course is completed
+        // Check if course is completed.
+        // Only record completed_at — never change status, otherwise every
+        // access check (which requires status = active) would lock the
+        // student out of a course they already own.
         $courseProgress = $user->getCourseProgress($lesson->course_id);
         if ($courseProgress >= 100) {
             Enrollment::where('user_id', $user->id)
                 ->where('course_id', $lesson->course_id)
-                ->update([
-                    'status' => 'completed',
-                    'completed_at' => now()
-                ]);
+                ->where('status', 'active')
+                ->whereNull('completed_at')
+                ->update(['completed_at' => now()]);
         }
 
         return response()->json([

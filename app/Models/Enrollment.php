@@ -121,6 +121,6 @@ class Enrollment extends Model
 
     public function scopeCompleted($query)
     {
-        return $query->where('status', 'completed');
+        return $query->whereNotNull('completed_at');
     }
 }

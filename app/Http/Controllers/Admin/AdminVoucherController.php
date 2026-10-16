@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Voucher;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
@@ -79,7 +80,7 @@ class AdminVoucherController extends Controller
             ], 422);
         }
 
-        $data = $validator->validated();
+        $data = $this->normalizeValidityDates($validator->validated());
         
         // Generate code if not provided
         if (empty($data['code'])) {
@@ -145,7 +146,7 @@ class AdminVoucherController extends Controller
             ], 422);
         }
 
-        $data = $validator->validated();
+        $data = $this->normalizeValidityDates($validator->validated());
 
         if (!empty($data['code'])) {
             $data['code'] = strtoupper(trim($data['code']));
@@ -210,6 +211,26 @@ class AdminVoucherController extends Controller
         ];
 
         return response()->json($stats);
+    }
+
+    /**
+     * The admin panel sends valid_from / valid_until as ISO-8601 instants
+     * (with offset). Convert them to the app timezone before storing, since
+     * the datetime cast stores the wall-clock value as-is and validity is
+     * compared against now() in the app timezone. Without this the voucher
+     * window shifts by the difference between the admin's timezone and the
+     * server's (7 hours for Vietnam vs UTC).
+     */
+    private function normalizeValidityDates(array $data): array
+    {
+        foreach (['valid_from', 'valid_until'] as $field) {
+            if (!empty($data[$field])) {
+                $data[$field] = Carbon::parse($data[$field])
+                    ->setTimezone(config('app.timezone'));
+            }
+        }
+
+        return $data;
     }
 
     private function generateUniqueCode(int $length = 8): string

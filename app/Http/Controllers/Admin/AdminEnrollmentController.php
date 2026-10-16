@@ -34,7 +34,13 @@ class AdminEnrollmentController extends Controller
         }
 
         if ($request->filled('status')) {
-            $query->where('status', $request->string('status')->toString());
+            $status = $request->string('status')->toString();
+            if ($status === 'completed') {
+                // Completion is tracked by completed_at; status stays "active".
+                $query->whereNotNull('completed_at');
+            } else {
+                $query->where('status', $status);
+            }
         }
 
         if ($request->filled('payment_status')) {
@@ -72,6 +78,7 @@ class AdminEnrollmentController extends Controller
                 'status' => $enrollment->status,
                 'enrolled_at' => $enrollment->enrolled_at,
                 'completed_at' => $enrollment->completed_at,
+                'expires_at' => $enrollment->expires_at,
                 'amount_paid' => $enrollment->amount_paid,
                 'created_at' => $enrollment->created_at,
                 'user' => $enrollment->user ? [
@@ -156,9 +163,10 @@ class AdminEnrollmentController extends Controller
             }
         }
 
-        // Check if already enrolled
+        // Check if already enrolled in the full course (chapter rows are separate)
         $existing = Enrollment::where('user_id', $userId)
             ->where('course_id', $courseId)
+            ->whereNull('section_id')
             ->first();
 
         if ($existing && in_array($existing->status, ['active', 'completed']) && !$existing->isExpired()) {
@@ -238,6 +246,167 @@ class AdminEnrollmentController extends Controller
                 ],
             ], 201);
         });
+    }
+
+    /**
+     * Grant (or restore) full-course access to many students at once.
+     * Students are identified by email or phone number, one per line
+     * (commas / semicolons also accepted). Each result is reported back
+     * so the admin can see who was unlocked, who already had access and
+     * which identifiers did not match any account.
+     */
+    public function bulkEnroll(Request $request)
+    {
+        $this->ensureAdmin();
+
+        $validator = Validator::make($request->all(), [
+            'identifiers' => 'required|string|max:50000',
+            'course_id' => 'required|integer|exists:courses,id',
+            'duration_tier_id' => 'nullable|integer|exists:course_duration_tiers,id',
+            'note' => 'nullable|string|max:500',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Dữ liệu không hợp lệ.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $courseId = $request->integer('course_id');
+        $tierId = $request->input('duration_tier_id') ?: null;
+        $note = (string) $request->input('note', '');
+
+        $tier = null;
+        if ($tierId) {
+            $tier = \App\Models\CourseDurationTier::where('id', $tierId)
+                ->where('course_id', $courseId)
+                ->first();
+
+            if (!$tier) {
+                return response()->json([
+                    'message' => 'Gói thời gian không thuộc khóa học này.',
+                ], 422);
+            }
+        }
+
+        $identifiers = collect(preg_split('/[\r\n,;]+/', $request->input('identifiers')))
+            ->map(fn ($v) => trim($v))
+            ->filter()
+            ->unique(fn ($v) => mb_strtolower($v))
+            ->values();
+
+        if ($identifiers->isEmpty()) {
+            return response()->json(['message' => 'Vui lòng nhập ít nhất một email hoặc số điện thoại.'], 422);
+        }
+
+        if ($identifiers->count() > 500) {
+            return response()->json(['message' => 'Tối đa 500 học viên mỗi lần.'], 422);
+        }
+
+        $results = [];
+        $summary = ['created' => 0, 'reactivated' => 0, 'already_active' => 0, 'not_found' => 0, 'ambiguous' => 0];
+
+        foreach ($identifiers as $identifier) {
+            $users = str_contains($identifier, '@')
+                ? User::whereRaw('LOWER(email) = ?', [mb_strtolower($identifier)])->limit(2)->get()
+                : User::where('phone', $identifier)->limit(2)->get();
+
+            if ($users->isEmpty()) {
+                $summary['not_found']++;
+                $results[] = ['identifier' => $identifier, 'result' => 'not_found'];
+                continue;
+            }
+
+            if ($users->count() > 1) {
+                $summary['ambiguous']++;
+                $results[] = ['identifier' => $identifier, 'result' => 'ambiguous'];
+                continue;
+            }
+
+            $user = $users->first();
+
+            $outcome = DB::transaction(function () use ($user, $courseId, $tier, $note) {
+                $existing = Enrollment::where('user_id', $user->id)
+                    ->where('course_id', $courseId)
+                    ->whereNull('section_id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($existing && in_array($existing->status, ['active', 'completed']) && !$existing->isExpired()) {
+                    if ($existing->status === 'completed') {
+                        $existing->update(['status' => 'active']);
+                        return ['result' => 'reactivated', 'enrollment' => $existing];
+                    }
+                    return ['result' => 'already_active', 'enrollment' => $existing];
+                }
+
+                $expiresAt = $tier && $tier->duration_days ? now()->addDays($tier->duration_days) : null;
+                $attributes = [
+                    'status' => 'active',
+                    'enrolled_at' => now(),
+                    'amount_paid' => 0,
+                    'duration_tier_id' => $tier?->id,
+                    'expires_at' => $expiresAt,
+                ];
+
+                if ($existing) {
+                    $existing->update($attributes);
+                    $enrollment = $existing;
+                    $result = 'reactivated';
+                } else {
+                    $enrollment = Enrollment::create($attributes + [
+                        'user_id' => $user->id,
+                        'course_id' => $courseId,
+                        'section_id' => null,
+                    ]);
+                    $result = 'created';
+                }
+
+                // Audit trail, same shape as manual enrollment (amount 0).
+                CoursePayment::create([
+                    'product_type' => 'course',
+                    'user_id' => $user->id,
+                    'course_id' => $courseId,
+                    'enrollment_id' => $enrollment->id,
+                    'duration_tier_id' => $tier?->id,
+                    'order_code' => 'BULK-' . strtoupper(uniqid()) . '-' . $user->id,
+                    'amount' => 0,
+                    'original_amount' => 0,
+                    'discount_amount' => 0,
+                    'transfer_amount' => 0,
+                    'status' => 'paid',
+                    'paid_at' => now(),
+                    'raw_payload' => json_encode([
+                        'type' => 'bulk_unlock',
+                        'admin_id' => Auth::id(),
+                        'admin_name' => Auth::user()->name ?? '',
+                        'note' => $note,
+                        'duration_tier_id' => $tier?->id,
+                        'expires_at' => $expiresAt?->toIso8601String(),
+                        'created_at' => now()->toIso8601String(),
+                    ]),
+                ]);
+
+                return ['result' => $result, 'enrollment' => $enrollment];
+            });
+
+            $summary[$outcome['result']]++;
+            $results[] = [
+                'identifier' => $identifier,
+                'result' => $outcome['result'],
+                'user' => ['id' => $user->id, 'name' => $user->name, 'email' => $user->email],
+                'expires_at' => $outcome['enrollment']->expires_at?->toIso8601String(),
+            ];
+        }
+
+        $unlocked = $summary['created'] + $summary['reactivated'];
+
+        return response()->json([
+            'message' => "Đã mở khoá cho {$unlocked} học viên.",
+            'summary' => $summary,
+            'results' => $results,
+        ]);
     }
 
     public function stats()

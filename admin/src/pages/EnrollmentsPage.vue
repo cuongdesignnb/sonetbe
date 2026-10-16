@@ -73,6 +73,20 @@
           </svg>
           Thêm thủ công
         </button>
+        <button class="btn" @click="openBulkModal">
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+          </svg>
+          Mở khoá hàng loạt
+        </button>
       </div>
     </div>
 
@@ -316,9 +330,9 @@
                 </div>
               </td>
               <td>
-                <span :class="['status-badge', enrollmentBadgeClass(e.status)]">
+                <span :class="['status-badge', enrollmentBadgeClass(displayStatus(e))]">
                   <span class="status-dot"></span>
-                  {{ enrollmentLabel(e.status) }}
+                  {{ enrollmentLabel(displayStatus(e)) }}
                 </span>
               </td>
             </tr>
@@ -516,11 +530,108 @@
         </div>
       </div>
     </div>
+
+    <!-- Bulk Unlock Modal -->
+    <div v-if="showBulkModal" class="modal-overlay" @click.self="closeBulkModal">
+      <div class="modal" style="width: min(640px, 95vw)">
+        <div class="modal-header">
+          <div class="modal-title">Mở khoá khoá học hàng loạt</div>
+          <button class="btn btn-secondary btn-sm" @click="closeBulkModal">
+            Đóng
+          </button>
+        </div>
+        <div class="modal-body">
+          <div v-if="bulkError" class="alert alert-danger" style="margin-bottom: 16px">
+            {{ bulkError }}
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Danh sách học viên *</label>
+            <textarea
+              v-model="bulkIdentifiers"
+              class="input"
+              rows="8"
+              placeholder="Mỗi dòng một email hoặc số điện thoại&#10;nguyenvana@gmail.com&#10;0901234567"
+            ></textarea>
+            <div class="form-hint">
+              {{ bulkIdentifierCount }} dòng · tối đa 500 học viên mỗi lần. Học viên đã có
+              quyền học sẽ được giữ nguyên.
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Khóa học *</label>
+            <select v-model.number="bulkCourseId" class="input" @change="onBulkCourseChange">
+              <option :value="0" disabled>-- Chọn khóa học --</option>
+              <option v-for="c in courses" :key="c.id" :value="c.id">
+                {{ c.title }}
+              </option>
+            </select>
+          </div>
+
+          <div class="form-group" v-if="bulkCourseTiers.length > 0">
+            <label class="form-label">Gói thời gian</label>
+            <select v-model.number="bulkTierId" class="input">
+              <option :value="0">-- Vĩnh viễn (không giới hạn) --</option>
+              <option v-for="t in bulkCourseTiers" :key="t.id" :value="t.id">
+                {{ t.label }}
+                {{ t.duration_days ? `(${t.duration_days} ngày)` : "(Vĩnh viễn)" }}
+              </option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Ghi chú</label>
+            <input
+              v-model="bulkNote"
+              class="input"
+              placeholder="VD: Chuyển khoản ngoài, khôi phục quyền học..."
+            />
+          </div>
+
+          <div v-if="bulkResult" class="bulk-result">
+            <div class="alert alert-success" style="margin-bottom: 12px">
+              {{ bulkResult.message }}
+            </div>
+            <div class="bulk-summary">
+              <span>Mới mở khoá: <b>{{ bulkResult.summary.created }}</b></span>
+              <span>Khôi phục: <b>{{ bulkResult.summary.reactivated }}</b></span>
+              <span>Đã có quyền: <b>{{ bulkResult.summary.already_active }}</b></span>
+              <span>Không tìm thấy: <b>{{ bulkResult.summary.not_found }}</b></span>
+              <span v-if="bulkResult.summary.ambiguous">
+                Trùng nhiều tài khoản: <b>{{ bulkResult.summary.ambiguous }}</b>
+              </span>
+            </div>
+            <table class="bulk-table">
+              <tbody>
+                <tr v-for="r in bulkResult.results" :key="r.identifier">
+                  <td>{{ r.identifier }}</td>
+                  <td>{{ r.user ? r.user.name : "" }}</td>
+                  <td :class="['bulk-status', `bulk-${r.result}`]">
+                    {{ bulkResultLabel(r.result) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" @click="closeBulkModal">Đóng</button>
+          <button
+            class="btn btn-primary"
+            :disabled="bulkSubmitting || !bulkCourseId || bulkIdentifierCount === 0"
+            @click="submitBulkEnroll"
+          >
+            {{ bulkSubmitting ? "Đang xử lý..." : "Mở khoá" }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { apiFetch, extractMessage, HttpError } from "../lib/api";
 import type { AdminEnrollment } from "../lib/types";
 
@@ -664,6 +775,102 @@ function onManualTierChange() {
   }
 }
 
+// Bulk unlock modal state
+type BulkResultRow = {
+  identifier: string;
+  result: "created" | "reactivated" | "already_active" | "not_found" | "ambiguous";
+  user?: { id: number; name: string; email: string };
+};
+type BulkResponse = {
+  message: string;
+  summary: Record<BulkResultRow["result"], number>;
+  results: BulkResultRow[];
+};
+
+const showBulkModal = ref(false);
+const bulkIdentifiers = ref("");
+const bulkCourseId = ref(0);
+const bulkTierId = ref(0);
+const bulkCourseTiers = ref<{ id: number; label: string; duration_days: number | null }[]>([]);
+const bulkNote = ref("");
+const bulkSubmitting = ref(false);
+const bulkError = ref<string | null>(null);
+const bulkResult = ref<BulkResponse | null>(null);
+
+const bulkIdentifierCount = computed(
+  () => bulkIdentifiers.value.split(/[\r\n,;]+/).filter((v) => v.trim()).length,
+);
+
+function openBulkModal() {
+  showBulkModal.value = true;
+  bulkIdentifiers.value = "";
+  bulkCourseId.value = 0;
+  bulkTierId.value = 0;
+  bulkCourseTiers.value = [];
+  bulkNote.value = "";
+  bulkError.value = null;
+  bulkResult.value = null;
+}
+
+function closeBulkModal() {
+  showBulkModal.value = false;
+}
+
+async function onBulkCourseChange() {
+  bulkTierId.value = 0;
+  bulkCourseTiers.value = [];
+  if (!bulkCourseId.value) return;
+  try {
+    const res = await apiFetch<{ data: { id: number; label: string; duration_days: number | null; is_active: boolean }[] }>(
+      `/api/admin/courses/${bulkCourseId.value}/duration-tiers`
+    );
+    bulkCourseTiers.value = res.data || [];
+  } catch {
+    bulkCourseTiers.value = [];
+  }
+}
+
+async function submitBulkEnroll() {
+  if (!bulkCourseId.value || bulkIdentifierCount.value === 0) return;
+  bulkSubmitting.value = true;
+  bulkError.value = null;
+  bulkResult.value = null;
+  try {
+    bulkResult.value = await apiFetch<BulkResponse>("/api/admin/enrollments/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identifiers: bulkIdentifiers.value,
+        course_id: bulkCourseId.value,
+        duration_tier_id: bulkTierId.value || null,
+        note: bulkNote.value,
+      }),
+    });
+    await loadEnrollments();
+  } catch (e) {
+    bulkError.value = extractMessage(e);
+  } finally {
+    bulkSubmitting.value = false;
+  }
+}
+
+function bulkResultLabel(result: BulkResultRow["result"]) {
+  switch (result) {
+    case "created":
+      return "Đã mở khoá";
+    case "reactivated":
+      return "Đã khôi phục";
+    case "already_active":
+      return "Đã có quyền học";
+    case "not_found":
+      return "Không tìm thấy tài khoản";
+    case "ambiguous":
+      return "Trùng nhiều tài khoản";
+    default:
+      return result;
+  }
+}
+
 function getUserInitial(name?: string | null) {
   if (!name) return "?";
   return name.charAt(0).toUpperCase();
@@ -707,6 +914,13 @@ function paymentBadgeClass(e: AdminEnrollment) {
   if (e.payment_status === "pending") return "status-warning";
   if (e.payment_status === "free") return "status-info";
   return "";
+}
+
+// Completion is tracked by completed_at; the enrollment itself stays "active"
+// so the student keeps access to the course.
+function displayStatus(e: AdminEnrollment) {
+  if (e.status === "active" && e.completed_at) return "completed";
+  return e.status;
 }
 
 function enrollmentLabel(status?: string | null) {
@@ -784,6 +998,45 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.bulk-result {
+  margin-top: 8px;
+}
+
+.bulk-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.bulk-table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+}
+
+.bulk-table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border, #e5e7eb);
+  word-break: break-all;
+}
+
+.bulk-status {
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.bulk-created,
+.bulk-reactivated {
+  color: #16a34a;
+}
+
+.bulk-not_found,
+.bulk-ambiguous {
+  color: #dc2626;
+}
+
 .enrollments-page {
   max-width: 1600px;
   margin: 0 auto;

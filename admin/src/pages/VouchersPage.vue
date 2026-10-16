@@ -507,6 +507,24 @@ function formatCurrency(value: string | number): string {
   }).format(num);
 }
 
+// The API returns dates as UTC ISO strings ("...Z"). <input type="datetime-local">
+// works in the admin's local time, so convert both ways instead of slicing the
+// string — slicing showed (and re-saved) UTC wall-clock time, shifting the
+// voucher validity window by the timezone offset.
+function toLocalInputValue(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function toIsoInstant(local: string): string | null {
+  if (!local) return null;
+  const d = new Date(local);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "—";
   const d = new Date(dateStr);
@@ -634,8 +652,8 @@ function openEdit(voucher: Voucher) {
     max_discount: voucher.max_discount ? Number(voucher.max_discount) : null,
     usage_limit: voucher.usage_limit || null,
     usage_per_user: voucher.usage_per_user || null,
-    valid_from: voucher.valid_from ? voucher.valid_from.slice(0, 16) : "",
-    valid_until: voucher.valid_until ? voucher.valid_until.slice(0, 16) : "",
+    valid_from: toLocalInputValue(voucher.valid_from),
+    valid_until: toLocalInputValue(voucher.valid_until),
     status: voucher.status,
     applicable_type: voucher.applicable_type || "all",
     course_ids: voucher.courses?.map((c) => c.id) || [],
@@ -659,8 +677,8 @@ async function saveVoucher() {
     const payload = {
       ...form.value,
       code: form.value.code.trim().toUpperCase() || undefined,
-      valid_from: form.value.valid_from || null,
-      valid_until: form.value.valid_until || null,
+      valid_from: toIsoInstant(form.value.valid_from),
+      valid_until: toIsoInstant(form.value.valid_until),
       course_ids: form.value.applicable_type === 'specific' ? form.value.course_ids : [],
     };
 
