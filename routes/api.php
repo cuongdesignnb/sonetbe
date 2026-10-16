@@ -112,16 +112,15 @@ Route::get('/ebooks/{slug}', [EbookController::class, 'show']);
 // Public preview video – allows unauthenticated users to watch preview lessons
 Route::get('/lessons/{id}/preview-video', [LessonController::class, 'streamPreviewVideo'])
     ->middleware(['block.download.browsers']);
+Route::post('/lessons/{id}/video-events', [LessonController::class, 'playbackEvent']);
 
 // SePay webhook (public)
 Route::post('/sepay/webhook', [SePayWebhookController::class, 'handle']);
 
-// HLS proxy - must be public because video player doesn't send auth headers
-// Security is handled via signed URLs with timestamp verification
-// ALSO protected by BlockDownloadBrowsers middleware to block Cốc Cốc and download managers
+// HLS relay segment requests cannot send the course Bearer token; each request
+// is authorized by a short-lived opaque playback session created after lesson access checks.
 Route::get('/lessons/{id}/hls', [LessonController::class, 'proxyHls'])
     ->name('lesson.hls')
-    ->middleware(['block.download.browsers'])
     ->withoutMiddleware(['auth:sanctum', 'auth']);
 
 // Protected routes
