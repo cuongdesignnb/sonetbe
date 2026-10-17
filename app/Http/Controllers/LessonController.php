@@ -1029,8 +1029,22 @@ class LessonController extends Controller
         }
 
         $cacheKey = 'bunny:stream-hostname:library:' . $libraryId;
+        $cached = Cache::get($cacheKey);
+        if (is_string($cached) && $cached !== '') {
+            return $cached;
+        }
 
-        return (string) Cache::remember($cacheKey, now()->addHours(24), function () use ($libraryId): string {
+        // Only a successful lookup is cached for 24 hours. A failed lookup
+        // (e.g. the server's DNS timing out on api.bunny.net) used to cache an
+        // empty hostname for a whole day, disabling the relay for that library
+        // long after DNS recovered. Failures are remembered for one minute so a
+        // DNS outage does not add a 5-second API call to every lesson load.
+        $failureKey = $cacheKey . ':failed';
+        if (Cache::has($failureKey)) {
+            return '';
+        }
+
+        $hostname = (function () use ($libraryId): string {
             $accountApiKey = trim((string) SettingsService::get(
                 'bunnycdn.api_key',
                 config('bunnycdn.api_key', '')
@@ -1099,7 +1113,15 @@ class LessonController extends Controller
             }
 
             return '';
-        });
+        })();
+
+        if ($hostname !== '') {
+            Cache::put($cacheKey, $hostname, now()->addHours(24));
+        } else {
+            Cache::put($failureKey, true, now()->addMinute());
+        }
+
+        return $hostname;
     }
 
     private function isSafeBunnyStreamHostname(string $hostname): bool
