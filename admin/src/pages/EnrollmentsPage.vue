@@ -127,7 +127,7 @@
           <input
             v-model="search"
             class="input"
-            placeholder="Tìm theo tên hoặc email..."
+            placeholder="Tên, email hoặc SĐT..."
             @keyup.enter="loadEnrollments"
           />
         </div>
@@ -202,6 +202,27 @@
           </select>
         </div>
 
+        <div class="filter-item">
+          <label class="filter-label">Loại đăng ký</label>
+          <select v-model="purchaseType" class="input">
+            <option value="all">Tất cả</option>
+            <option value="full">Toàn khoá</option>
+            <option value="chapter">Chương lẻ</option>
+          </select>
+        </div>
+
+        <div class="filter-item">
+          <label class="filter-label">Thời hạn</label>
+          <select v-model="accessFilter" class="input">
+            <option value="all">Tất cả</option>
+            <option value="active">Còn hạn (&gt; 7 ngày)</option>
+            <option value="expiring">Sắp hết hạn (≤ 7 ngày)</option>
+            <option value="expired">Đã hết hạn</option>
+            <option value="lifetime">Vĩnh viễn</option>
+            <option value="pending">Chờ thanh toán</option>
+          </select>
+        </div>
+
         <div class="filter-actions">
           <button
             class="btn btn-secondary"
@@ -244,6 +265,21 @@
         <div class="table-info">
           <span class="table-count">{{ enrollments.length }} đơn đăng ký</span>
         </div>
+        <div v-if="summary" class="access-summary">
+          <button type="button" class="access-chip chip-expiring" @click="quickAccess('expiring')">
+            Sắp hết hạn: <b>{{ summary.expiring }}</b>
+          </button>
+          <button type="button" class="access-chip chip-expired" @click="quickAccess('expired')">
+            Đã hết hạn: <b>{{ summary.expired }}</b>
+          </button>
+          <button type="button" class="access-chip chip-active" @click="quickAccess('active')">
+            Còn hạn: <b>{{ summary.active }}</b>
+          </button>
+          <button type="button" class="access-chip chip-lifetime" @click="quickAccess('lifetime')">
+            Vĩnh viễn: <b>{{ summary.lifetime }}</b>
+          </button>
+          <span class="access-chip">Chương lẻ: <b>{{ summary.chapter }}</b></span>
+        </div>
       </div>
 
       <div class="table-wrapper">
@@ -252,12 +288,12 @@
             <tr>
               <th style="width: 70px">ID</th>
               <th style="width: 220px">Học viên</th>
-              <th style="width: 280px">Khóa học</th>
-              <th style="width: 140px">Thời gian</th>
+              <th style="width: 300px">Đăng ký</th>
+              <th style="width: 200px">Thời hạn</th>
+              <th style="width: 140px">Ngày đăng ký</th>
               <th style="width: 130px">Số tiền</th>
               <th style="width: 130px">Thanh toán</th>
               <th>Mã đơn / SePay</th>
-              <th style="width: 130px">Trạng thái</th>
             </tr>
           </thead>
           <tbody>
@@ -273,15 +309,50 @@
                   <div class="user-info">
                     <div class="user-name">{{ e.user?.name || "--" }}</div>
                     <div class="user-email">{{ e.user?.email || "" }}</div>
+                    <div v-if="e.user?.phone" class="user-email">{{ e.user.phone }}</div>
                   </div>
                 </div>
               </td>
               <td>
                 <div class="course-cell">
-                  <div class="course-name">{{ e.course?.title || "--" }}</div>
+                  <div class="course-name" :title="e.course?.title || ''">
+                    {{ e.course?.title || "--" }}
+                  </div>
+                  <span
+                    :class="['purchase-tag', e.purchase_type === 'chapter' ? 'purchase-chapter' : 'purchase-full']"
+                    :title="e.purchase_label"
+                  >
+                    {{ e.purchase_label || "Toàn khoá" }}
+                  </span>
                   <div class="course-meta">
-                    ID: {{ e.course?.id || "--" }} ·
-                    {{ formatCurrency(e.course?.price) }}
+                    <template v-if="e.purchase_type === 'chapter' && e.section">
+                      Giá chương: {{ formatCurrency(e.section.price) }}
+                    </template>
+                    <template v-else-if="e.duration_tier">
+                      Gói {{ e.duration_tier.duration_days ? `${e.duration_tier.duration_days} ngày` : "vĩnh viễn" }}
+                      · {{ formatCurrency(e.duration_tier.price) }}
+                    </template>
+                    <template v-else>Giá khoá: {{ formatCurrency(e.course?.price) }}</template>
+                    <template v-if="e.payment?.voucher_code"> · Voucher {{ e.payment.voucher_code }}</template>
+                    <template v-if="(e.paid_orders_count || 0) > 1"> · {{ e.paid_orders_count }} lần mua/gia hạn</template>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div class="access-cell">
+                  <span :class="['status-badge', accessBadgeClass(e.access_state)]">
+                    <span class="status-dot"></span>
+                    {{ accessLabel(e) }}
+                  </span>
+                  <div v-if="e.expires_at" class="access-date">
+                    {{ e.access_state === "expired" ? "Hết hạn" : "Hạn đến" }}
+                    {{ formatDay(e.expires_at) }}
+                  </div>
+                  <div v-else-if="e.access_state === 'lifetime'" class="access-date">
+                    Không giới hạn thời gian
+                  </div>
+                  <div v-if="e.completed_at" class="access-date access-completed">
+                    ✓ Đã học xong {{ formatDay(e.completed_at) }}
                   </div>
                 </div>
               </td>
@@ -328,12 +399,6 @@
                     {{ e.payment.sepay_txn_id }}
                   </div>
                 </div>
-              </td>
-              <td>
-                <span :class="['status-badge', enrollmentBadgeClass(displayStatus(e))]">
-                  <span class="status-dot"></span>
-                  {{ enrollmentLabel(displayStatus(e)) }}
-                </span>
               </td>
             </tr>
             <tr v-if="!loading && enrollments.length === 0">
@@ -399,7 +464,7 @@
               <input
                 v-model="manualUserSearch"
                 class="input"
-                placeholder="Tìm theo tên hoặc email..."
+                placeholder="Tên, email hoặc SĐT..."
                 @input="debouncedSearchUsers"
               />
               <div
@@ -642,6 +707,18 @@ const courses = ref<CourseOption[]>([]);
 const selectedCourseId = ref(0);
 const paymentStatus = ref<"all" | "paid" | "pending" | "free">("all");
 const enrollmentStatus = ref<"all" | "pending" | "active" | "completed">("all");
+const purchaseType = ref<"all" | "full" | "chapter">("all");
+const accessFilter = ref<"all" | "active" | "expiring" | "expired" | "lifetime" | "pending">("all");
+type EnrollmentSummary = {
+  total: number;
+  lifetime: number;
+  active: number;
+  expiring: number;
+  expired: number;
+  pending: number;
+  chapter: number;
+};
+const summary = ref<EnrollmentSummary | null>(null);
 const search = ref("");
 
 const loading = ref(false);
@@ -905,7 +982,7 @@ function formatCurrency(value?: string | number | null) {
 function paymentLabel(e: AdminEnrollment) {
   if (e.payment_status === "paid") return "Đã TT";
   if (e.payment_status === "pending") return "Chờ TT";
-  if (e.payment_status === "free") return "Miễn phí";
+  if (e.payment_status === "free") return e.payment?.voucher_code ? "Voucher 100%" : "Miễn phí";
   return "--";
 }
 
@@ -916,25 +993,40 @@ function paymentBadgeClass(e: AdminEnrollment) {
   return "";
 }
 
-// Completion is tracked by completed_at; the enrollment itself stays "active"
-// so the student keeps access to the course.
-function displayStatus(e: AdminEnrollment) {
-  if (e.status === "active" && e.completed_at) return "completed";
-  return e.status;
+function quickAccess(value: "active" | "expiring" | "expired" | "lifetime") {
+  accessFilter.value = value;
+  loadEnrollments();
 }
 
-function enrollmentLabel(status?: string | null) {
-  if (status === "pending") return "Chờ TT";
-  if (status === "active") return "Đang học";
-  if (status === "completed") return "Hoàn thành";
-  return status || "--";
+function accessLabel(e: AdminEnrollment) {
+  switch (e.access_state) {
+    case "pending":
+      return "Chờ thanh toán";
+    case "lifetime":
+      return "Vĩnh viễn";
+    case "expired":
+      return "Đã hết hạn";
+    case "expiring":
+    case "active":
+      return `Còn ${e.days_remaining ?? 0} ngày`;
+    default:
+      return "Không hoạt động";
+  }
 }
 
-function enrollmentBadgeClass(status?: string | null) {
-  if (status === "active") return "status-success";
-  if (status === "pending") return "status-warning";
-  if (status === "completed") return "status-primary";
+function accessBadgeClass(state?: string | null) {
+  if (state === "active") return "status-success";
+  if (state === "expiring" || state === "pending") return "status-warning";
+  if (state === "expired") return "status-danger";
+  if (state === "lifetime") return "status-info";
   return "";
+}
+
+function formatDay(value?: string | null) {
+  if (!value) return "--";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function resetFilters() {
@@ -942,6 +1034,8 @@ function resetFilters() {
   selectedCourseId.value = 0;
   paymentStatus.value = "all";
   enrollmentStatus.value = "all";
+  purchaseType.value = "all";
+  accessFilter.value = "all";
   loadEnrollments();
 }
 
@@ -975,11 +1069,14 @@ async function loadEnrollments() {
       qs.set("payment_status", paymentStatus.value);
     if (enrollmentStatus.value !== "all")
       qs.set("status", enrollmentStatus.value);
+    if (purchaseType.value !== "all") qs.set("type", purchaseType.value);
+    if (accessFilter.value !== "all") qs.set("access", accessFilter.value);
     if (search.value.trim()) qs.set("search", search.value.trim());
-    const res = await apiFetch<{ data: AdminEnrollment[] }>(
+    const res = await apiFetch<{ data: AdminEnrollment[]; summary?: EnrollmentSummary }>(
       `/api/admin/enrollments?${qs.toString()}`,
     );
     enrollments.value = res.data || [];
+    summary.value = res.summary ?? null;
   } catch (e) {
     if (e instanceof HttpError && e.status === 401) {
       location.href = "/admin/login";
@@ -998,6 +1095,76 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.access-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.access-chip {
+  border: 1px solid var(--border, #e5e7eb);
+  background: transparent;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--gray-600, #4b5563);
+  cursor: pointer;
+}
+
+.chip-expiring b { color: #d97706; }
+.chip-expired b { color: #dc2626; }
+.chip-active b { color: #059669; }
+.chip-lifetime b { color: #2563eb; }
+
+.purchase-tag {
+  display: inline-block;
+  max-width: 280px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.purchase-full {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--primary, #4f46e5);
+}
+
+.purchase-chapter {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+.access-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.access-cell .status-badge {
+  white-space: nowrap;
+  text-transform: none;
+}
+
+.access-date {
+  font-size: 12px;
+  color: var(--gray-500, #6b7280);
+}
+
+.access-completed {
+  color: #059669;
+}
+
+.status-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
 .bulk-result {
   margin-top: 8px;
 }

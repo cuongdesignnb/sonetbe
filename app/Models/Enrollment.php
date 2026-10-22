@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use App\Models\CoursePayment;
+use Carbon\Carbon;
 
 class Enrollment extends Model
 {
@@ -47,6 +48,11 @@ class Enrollment extends Model
         return $this->belongsTo(CourseSection::class, 'section_id');
     }
 
+    public function payments()
+    {
+        return $this->hasMany(CoursePayment::class);
+    }
+
     public function latestPayment()
     {
         return $this->hasOne(CoursePayment::class)->latestOfMany('id');
@@ -86,7 +92,73 @@ class Enrollment extends Model
         if ($this->isExpired()) {
             return 0;
         }
-        return (int) now()->diffInDays($this->expires_at, false);
+        // Round up: 23 hours left is "1 day left", not "0 days".
+        return (int) ceil(now()->diffInSeconds($this->expires_at, false) / 86400);
+    }
+
+    /**
+     * Expiry after buying (or being granted) a package of $durationDays days.
+     * null days means lifetime. Time is added on top of the remaining access
+     * when the enrollment is still valid, so renewing early never loses days;
+     * an expired or pending enrollment starts from now. Lifetime access is
+     * never downgraded to a time-limited one.
+     */
+    public function accessExpiryAfterPurchase(?int $durationDays): ?Carbon
+    {
+        if ($durationDays === null) {
+            return null;
+        }
+
+        if ($this->isAccessible() && $this->isLifetime()) {
+            return null;
+        }
+
+        $base = $this->isAccessible() && $this->expires_at
+            ? $this->expires_at->copy()
+            : now();
+
+        return $base->addDays($durationDays);
+    }
+
+    /**
+     * Access state for admin/student displays:
+     * pending | lifetime | active | expiring (<= 7 days) | expired | inactive
+     */
+    public function accessState(): string
+    {
+        if ($this->status === 'pending') {
+            return 'pending';
+        }
+        if ($this->status !== 'active') {
+            return 'inactive';
+        }
+        if ($this->isLifetime()) {
+            return 'lifetime';
+        }
+        if ($this->isExpired()) {
+            return 'expired';
+        }
+
+        return $this->daysRemaining() <= 7 ? 'expiring' : 'active';
+    }
+
+    /**
+     * Human-readable description of what was bought, e.g.
+     * "Toàn khoá · 3 tháng" or "Chương lẻ: Chương 2 - ...".
+     */
+    public function purchaseLabel(): string
+    {
+        if ($this->section_id) {
+            $title = $this->section?->title;
+            return 'Chương lẻ' . ($title ? ': ' . $title : ' #' . $this->section_id);
+        }
+
+        $tier = $this->durationTier;
+        if ($tier) {
+            return 'Toàn khoá · ' . $tier->label;
+        }
+
+        return 'Toàn khoá' . ($this->isLifetime() ? ' · Vĩnh viễn' : '');
     }
 
     /**

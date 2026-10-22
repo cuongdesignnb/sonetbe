@@ -27,7 +27,15 @@ class AdminEnrollmentController extends Controller
     {
         $this->ensureAdmin();
 
-        $query = Enrollment::query()->with(['user', 'course', 'latestPayment']);
+        $query = Enrollment::query()->with([
+            'user',
+            'course',
+            'section',
+            'durationTier',
+            'latestPayment.voucher',
+        ])->withCount(['payments as paid_orders_count' => function ($q) {
+            $q->where('status', 'paid');
+        }]);
 
         if ($request->filled('course_id')) {
             $query->where('course_id', $request->integer('course_id'));
@@ -43,12 +51,33 @@ class AdminEnrollmentController extends Controller
             }
         }
 
+        // What was bought: the whole course or a single chapter.
+        if ($request->filled('type')) {
+            $type = $request->string('type')->toString();
+            if ($type === 'full') {
+                $query->whereNull('section_id');
+            } elseif ($type === 'chapter') {
+                $query->whereNotNull('section_id');
+            }
+        }
+
         if ($request->filled('payment_status')) {
             $paymentStatus = $request->string('payment_status')->toString();
             if ($paymentStatus === 'free') {
+                // Free / 100% voucher: no order at all (legacy) or a 0đ paid order.
                 $query->where(function ($q) {
-                    $q->where('amount_paid', 0)->orWhereNull('amount_paid');
-                })->whereDoesntHave('latestPayment');
+                    $q->where(function ($q) {
+                        $q->where(function ($q) {
+                            $q->where('amount_paid', 0)->orWhereNull('amount_paid');
+                        })->whereDoesntHave('latestPayment');
+                    })->orWhereHas('latestPayment', function ($q) {
+                        $q->where('status', 'paid')->where('amount', 0);
+                    });
+                });
+            } elseif ($paymentStatus === 'paid') {
+                $query->whereHas('latestPayment', function ($q) {
+                    $q->where('status', 'paid')->where('amount', '>', 0);
+                });
             } else {
                 $query->whereHas('latestPayment', function ($q) use ($paymentStatus) {
                     $q->where('status', $paymentStatus);
@@ -60,8 +89,46 @@ class AdminEnrollmentController extends Controller
             $search = $request->string('search')->toString();
             $query->whereHas('user', function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
+                    ->orWhere('email', 'like', "%{$search}%")
+                    ->orWhere('phone', 'like', "%{$search}%");
             });
+        }
+
+        // Counts for the quick-filter chips, computed before the access filter
+        // so they always show the whole picture for the other filters.
+        $now = now();
+        $count = fn (callable $scope) => $scope((clone $query))->count();
+        $summary = [
+            'lifetime' => $count(fn ($q) => $q->where('status', 'active')->whereNull('expires_at')),
+            'active' => $count(fn ($q) => $q->where('status', 'active')->where('expires_at', '>', $now->copy()->addDays(7))),
+            'expiring' => $count(fn ($q) => $q->where('status', 'active')->where('expires_at', '>', $now)->where('expires_at', '<=', $now->copy()->addDays(7))),
+            'expired' => $count(fn ($q) => $q->where('status', 'active')->where('expires_at', '<=', $now)),
+            'pending' => $count(fn ($q) => $q->where('status', 'pending')),
+            'chapter' => $count(fn ($q) => $q->whereNotNull('section_id')),
+        ];
+
+        // Remaining access time.
+        if ($request->filled('access')) {
+            $now = now();
+            switch ($request->string('access')->toString()) {
+                case 'lifetime':
+                    $query->where('status', 'active')->whereNull('expires_at');
+                    break;
+                case 'active':
+                    $query->where('status', 'active')->where('expires_at', '>', $now->copy()->addDays(7));
+                    break;
+                case 'expiring':
+                    $query->where('status', 'active')
+                        ->where('expires_at', '>', $now)
+                        ->where('expires_at', '<=', $now->copy()->addDays(7));
+                    break;
+                case 'expired':
+                    $query->where('status', 'active')->where('expires_at', '<=', $now);
+                    break;
+                case 'pending':
+                    $query->where('status', 'pending');
+                    break;
+            }
         }
 
         $items = $query->orderByDesc('created_at')->get();
@@ -69,7 +136,8 @@ class AdminEnrollmentController extends Controller
         $data = $items->map(function ($enrollment) {
             $payment = $enrollment->latestPayment;
             $paymentStatus = $payment?->status;
-            if (!$payment && (float) ($enrollment->amount_paid ?? 0) <= 0) {
+            if ((!$payment && (float) ($enrollment->amount_paid ?? 0) <= 0)
+                || ($payment && $payment->status === 'paid' && (float) $payment->amount <= 0)) {
                 $paymentStatus = 'free';
             }
 
@@ -79,12 +147,29 @@ class AdminEnrollmentController extends Controller
                 'enrolled_at' => $enrollment->enrolled_at,
                 'completed_at' => $enrollment->completed_at,
                 'expires_at' => $enrollment->expires_at,
+                'days_remaining' => $enrollment->daysRemaining(),
+                'access_state' => $enrollment->accessState(),
+                'purchase_type' => $enrollment->section_id ? 'chapter' : 'full',
+                'purchase_label' => $enrollment->purchaseLabel(),
+                'section' => $enrollment->section ? [
+                    'id' => $enrollment->section->id,
+                    'title' => $enrollment->section->title,
+                    'price' => $enrollment->section->price,
+                ] : null,
+                'duration_tier' => $enrollment->durationTier ? [
+                    'id' => $enrollment->durationTier->id,
+                    'label' => $enrollment->durationTier->label,
+                    'duration_days' => $enrollment->durationTier->duration_days,
+                    'price' => $enrollment->durationTier->price,
+                ] : null,
+                'paid_orders_count' => (int) ($enrollment->paid_orders_count ?? 0),
                 'amount_paid' => $enrollment->amount_paid,
                 'created_at' => $enrollment->created_at,
                 'user' => $enrollment->user ? [
                     'id' => $enrollment->user->id,
                     'name' => $enrollment->user->name,
                     'email' => $enrollment->user->email,
+                    'phone' => $enrollment->user->phone,
                 ] : null,
                 'course' => $enrollment->course ? [
                     'id' => $enrollment->course->id,
@@ -96,6 +181,9 @@ class AdminEnrollmentController extends Controller
                     'id' => $payment->id,
                     'status' => $payment->status,
                     'amount' => $payment->amount,
+                    'original_amount' => $payment->original_amount,
+                    'discount_amount' => $payment->discount_amount,
+                    'voucher_code' => $payment->voucher?->code,
                     'order_code' => $payment->order_code,
                     'paid_at' => $payment->paid_at,
                     'sepay_txn_id' => $payment->sepay_txn_id,
@@ -104,7 +192,10 @@ class AdminEnrollmentController extends Controller
             ];
         });
 
-        return response()->json(['data' => $data]);
+        return response()->json([
+            'data' => $data,
+            'summary' => ['total' => $data->count()] + $summary,
+        ]);
     }
 
     /**
@@ -169,18 +260,25 @@ class AdminEnrollmentController extends Controller
             ->whereNull('section_id')
             ->first();
 
-        if ($existing && in_array($existing->status, ['active', 'completed']) && !$existing->isExpired()) {
+        if ($existing && $existing->isAccessible() && $existing->isLifetime()) {
             return response()->json([
-                'message' => 'Học viên đã được đăng ký khóa học này rồi và vẫn còn hiệu lực.',
+                'message' => 'Học viên đã có quyền học vĩnh viễn khóa học này.',
             ], 409);
         }
 
-        return DB::transaction(function () use ($userId, $courseId, $amount, $note, $existing, $tier, $tierId, $expiresAt) {
+        // Still-valid time-limited access is extended (days are added on top of
+        // the remaining ones) — this is how an admin renews a student manually.
+        $isRenewal = $existing && $existing->isAccessible();
+        if ($existing) {
+            $expiresAt = $existing->accessExpiryAfterPurchase($tier?->duration_days);
+        }
+
+        return DB::transaction(function () use ($userId, $courseId, $amount, $note, $existing, $tier, $tierId, $expiresAt, $isRenewal) {
             // Create or update enrollment
             if ($existing) {
                 $existing->update([
                     'status' => 'active',
-                    'enrolled_at' => now(),
+                    'enrolled_at' => $isRenewal ? $existing->enrolled_at : now(),
                     'amount_paid' => $amount,
                     'duration_tier_id' => $tierId,
                     'expires_at' => $expiresAt,
@@ -227,7 +325,9 @@ class AdminEnrollmentController extends Controller
             $enrollment->load(['user', 'course', 'durationTier']);
 
             return response()->json([
-                'message' => 'Đã thêm học viên vào khóa học thành công.',
+                'message' => $isRenewal
+                    ? 'Đã gia hạn khóa học cho học viên.'
+                    : 'Đã thêm học viên vào khóa học thành công.',
                 'enrollment' => [
                     'id' => $enrollment->id,
                     'user' => $enrollment->user ? [

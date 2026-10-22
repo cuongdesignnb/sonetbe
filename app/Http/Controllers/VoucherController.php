@@ -56,6 +56,13 @@ class VoucherController extends Controller
                     'message' => 'Gói thời gian không hợp lệ hoặc đã bị vô hiệu hoá',
                 ], 400);
             }
+
+            if (!$tier->isAvailableForUser($user->id)) {
+                return response()->json([
+                    'valid' => false,
+                    'message' => 'Gói thời gian này không áp dụng cho tài khoản của bạn',
+                ], 400);
+            }
         }
 
         if ($section) {

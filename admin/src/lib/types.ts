@@ -176,15 +176,26 @@ export type AdminEnrollment = {
   status: "pending" | "active" | "completed" | string;
   enrolled_at?: string | null;
   completed_at?: string | null;
+  expires_at?: string | null;
+  days_remaining?: number | null;
+  access_state?: "pending" | "lifetime" | "active" | "expiring" | "expired" | "inactive" | string;
+  purchase_type?: "full" | "chapter";
+  purchase_label?: string;
+  section?: { id: number; title: string; price: string | number | null } | null;
+  duration_tier?: { id: number; label: string; duration_days: number | null; price: string | number } | null;
+  paid_orders_count?: number;
   amount_paid?: string | number | null;
   created_at?: string;
-  user?: { id: number; name: string; email: string } | null;
+  user?: { id: number; name: string; email: string; phone?: string | null } | null;
   course?: { id: number; title: string; price: string | number } | null;
   payment_status?: "paid" | "pending" | "free" | string | null;
   payment?: {
     id: number;
     status: "paid" | "pending" | string;
     amount: string | number;
+    original_amount?: string | number | null;
+    discount_amount?: string | number | null;
+    voucher_code?: string | null;
     order_code?: string | null;
     paid_at?: string | null;
     sepay_txn_id?: string | null;

@@ -115,21 +115,22 @@ class EnrollmentController extends Controller
 
         // Check if enrolled — always use numeric course ID
         if (!$user->hasAnyAccessToCourse($course->id)) {
+            // Tell an expired student so, instead of treating them like a
+            // visitor who never bought the course.
+            $expired = Enrollment::where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->whereNull('section_id')
+                ->expired()
+                ->first();
+            if ($expired) {
+                return response()->json([
+                    'message' => 'Khóa học đã hết hạn. Vui lòng gia hạn để tiếp tục học.',
+                    'expired' => true,
+                    'expires_at' => $expired->expires_at,
+                ], 403);
+            }
+
             return response()->json(['message' => 'Not enrolled'], 403);
-        }
-
-        // Check if enrollment is expired
-        $enrollment = Enrollment::where('user_id', $user->id)
-            ->where('course_id', $course->id)
-            ->where('status', 'active')
-            ->first();
-
-        if ($enrollment && $enrollment->isExpired()) {
-            return response()->json([
-                'message' => 'Khóa học đã hết hạn. Vui lòng gia hạn để tiếp tục học.',
-                'expired' => true,
-                'expires_at' => $enrollment->expires_at,
-            ], 403);
         }
 
         $lessons = $course->lessons;
@@ -168,22 +169,13 @@ class EnrollmentController extends Controller
         $user = Auth::user();
         $lesson = \App\Models\Lesson::findOrFail($lessonId);
 
-        // Check if enrolled in the course or has access to the lesson
+        // Check if enrolled in the course or has access to the lesson.
+        // hasAccessToLesson() already rejects expired enrollments. The extra
+        // check that used to follow picked an arbitrary enrollment row, so an
+        // expired full-course row could block progress on a chapter the
+        // student owns separately.
         if (!$user->hasAccessToLesson($lesson->id)) {
             return response()->json(['message' => 'Not enrolled'], 403);
-        }
-
-        // Check if enrollment is expired
-        $enrollment = Enrollment::where('user_id', $user->id)
-            ->where('course_id', $lesson->course_id)
-            ->where('status', 'active')
-            ->first();
-
-        if ($enrollment && $enrollment->isExpired()) {
-            return response()->json([
-                'message' => 'Khóa học đã hết hạn. Vui lòng gia hạn để tiếp tục học.',
-                'expired' => true,
-            ], 403);
         }
 
         $newPercentage = $request->completion_percentage;

@@ -38,9 +38,15 @@ class PaymentController extends Controller
                 return response()->json(['message' => 'Bạn đã sở hữu chương học này rồi'], 400);
             }
         } else {
-            // Full course check
-            if ($user->isEnrolledIn($course->id)) {
-                return response()->json(['message' => 'Already enrolled'], 400);
+            // Full course: only lifetime access blocks a new purchase. Expired
+            // students renew, and time-limited students may extend early (the
+            // new days are added on top of the remaining ones).
+            $current = Enrollment::where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->whereNull('section_id')
+                ->first();
+            if ($current && $current->isAccessible() && $current->isLifetime()) {
+                return response()->json(['message' => 'Bạn đã sở hữu khoá học này vĩnh viễn'], 400);
             }
         }
 
@@ -56,6 +62,12 @@ class PaymentController extends Controller
 
                 if (!$tier) {
                     return response()->json(['message' => 'Gói thời gian không hợp lệ hoặc đã bị vô hiệu hoá'], 400);
+                }
+
+                // Private tiers are hidden on the course page, but the id could
+                // still be posted directly.
+                if (!$tier->isAvailableForUser($user->id)) {
+                    return response()->json(['message' => 'Gói thời gian này không áp dụng cho tài khoản của bạn'], 400);
                 }
             }
         }
@@ -106,44 +118,68 @@ class PaymentController extends Controller
                         }
                     }
 
-                    // Check if already enrolled
-                    $existingEnrollment = Enrollment::where('user_id', $user->id)
+                    $enrollment = Enrollment::where('user_id', $user->id)
                         ->where('course_id', $course->id)
                         ->where('section_id', $section?->id)
-                        ->where('status', 'active')
+                        ->lockForUpdate()
                         ->first();
-                    
-                    if ($existingEnrollment) {
-                        return response()->json([
-                            'message' => 'Enrolled successfully',
-                            'enrollment' => $existingEnrollment,
-                            'discount_applied' => false,
-                        ]);
+
+                    $durationDays = !$section && $tier ? $tier->duration_days : null;
+                    $wasAccessible = $enrollment?->isAccessible() ?? false;
+                    $expiresAt = $enrollment
+                        ? $enrollment->accessExpiryAfterPurchase($durationDays)
+                        : ($durationDays ? now()->addDays($durationDays) : null);
+
+                    $attributes = [
+                        'status' => 'active',
+                        'amount_paid' => 0,
+                        'duration_tier_id' => $section ? null : $tier?->id,
+                        'expires_at' => $expiresAt,
+                    ];
+                    if (!$wasAccessible) {
+                        $attributes['enrolled_at'] = now();
                     }
 
-                    $enrollment = Enrollment::updateOrCreate(
-                        [
+                    if ($enrollment) {
+                        $enrollment->update($attributes);
+                    } else {
+                        $enrollment = Enrollment::create($attributes + [
                             'user_id' => $user->id,
                             'course_id' => $course->id,
                             'section_id' => $section?->id,
+                        ]);
+                    }
+
+                    // Keep an order record for free / 100%-voucher purchases too,
+                    // so the admin can see what was bought and when.
+                    $payment = CoursePayment::create([
+                        'product_type' => $section ? 'chapter' : 'course',
+                        'user_id' => $user->id,
+                        'course_id' => $course->id,
+                        'section_id' => $section?->id,
+                        'duration_tier_id' => $section ? null : $tier?->id,
+                        'enrollment_id' => $enrollment->id,
+                        'voucher_id' => $voucher?->id,
+                        'original_amount' => $originalPrice,
+                        'discount_amount' => $discountAmount,
+                        'amount' => 0,
+                        'transfer_amount' => 0,
+                        'status' => 'paid',
+                        'paid_at' => now(),
+                        'order_code' => 'FREE-' . strtoupper(uniqid()) . '-' . $user->id,
+                        'raw_payload' => [
+                            'type' => $voucher ? 'voucher_100' : 'free',
+                            'voucher_code' => $voucher?->code,
+                            'expires_at' => $expiresAt?->toIso8601String(),
                         ],
-                        [
-                            'status' => 'active',
-                            'enrolled_at' => now(),
-                            'amount_paid' => 0,
-                            'duration_tier_id' => $section ? null : $tier?->id,
-                            'expires_at' => !$section && $tier && $tier->duration_days
-                                ? now()->addDays($tier->duration_days)
-                                : null,
-                        ]
-                    );
+                    ]);
 
                     // Record voucher usage if used
                     if ($voucher && $discountAmount > 0) {
                         VoucherUsage::create([
                             'voucher_id' => $voucher->id,
                             'user_id' => $user->id,
-                            'course_payment_id' => null,
+                            'course_payment_id' => $payment->id,
                             'discount_amount' => $discountAmount,
                         ]);
                         $voucher->incrementUsage();
@@ -184,11 +220,14 @@ class PaymentController extends Controller
             ]
         );
 
-        if ($enrollment->status === 'active') {
-            return response()->json(['message' => 'Already enrolled'], 400);
+        // A chapter that is already owned cannot be bought twice. An active
+        // full-course enrollment here is a renewal: it stays active (the student
+        // keeps learning) and is extended when the payment arrives.
+        if ($section && $enrollment->status === 'active') {
+            return response()->json(['message' => 'Bạn đã sở hữu chương học này rồi'], 400);
         }
 
-        if ($enrollment->amount_paid != $finalAmount) {
+        if ($enrollment->status !== 'active' && $enrollment->amount_paid != $finalAmount) {
             $enrollment->update(['amount_paid' => $finalAmount]);
         }
 
@@ -214,7 +253,11 @@ class PaymentController extends Controller
                 'order_code' => 'TEMP-' . uniqid(),
             ]);
         } else {
+            // The student may have switched tier since the order was created:
+            // the tier must follow the amount, or paying the cheaper price would
+            // unlock the longer package.
             $payment->update([
+                'duration_tier_id' => $section ? null : $tier?->id,
                 'voucher_id' => $voucher?->id,
                 'original_amount' => $originalPrice,
                 'discount_amount' => $discountAmount,
