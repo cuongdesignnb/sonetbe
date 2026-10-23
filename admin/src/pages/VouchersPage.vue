@@ -185,7 +185,7 @@
                   :readonly="!!editingVoucher"
                   style="text-transform: uppercase"
                 />
-                <small class="muted">Chỉ chữ và số, tối đa 50 ký tự</small>
+                <small class="muted">Chữ không dấu, số, "-" hoặc "_", tối đa 50 ký tự</small>
               </div>
               <div class="form-group" style="flex: 1">
                 <label class="label">Trạng thái</label>

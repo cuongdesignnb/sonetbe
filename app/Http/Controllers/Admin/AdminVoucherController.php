@@ -55,8 +55,10 @@ class AdminVoucherController extends Controller
     {
         $this->ensureAdmin();
 
+        $this->normalizeCode($request);
+
         $validator = Validator::make($request->all(), [
-            'code' => 'nullable|string|max:50|unique:vouchers,code',
+            'code' => ['nullable', 'string', 'max:50', 'regex:/^[A-Z0-9_-]+$/', 'unique:vouchers,code'],
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
             'discount_type' => 'required|in:fixed,percent',
@@ -71,13 +73,10 @@ class AdminVoucherController extends Controller
             'applicable_type' => 'nullable|in:all,specific',
             'course_ids' => 'nullable|array',
             'course_ids.*' => 'integer|exists:courses,id',
-        ]);
+        ], self::VALIDATION_MESSAGES, self::VALIDATION_ATTRIBUTES);
 
         if ($validator->fails()) {
-            return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->validationError($validator);
         }
 
         $data = $this->normalizeValidityDates($validator->validated());
@@ -95,7 +94,7 @@ class AdminVoucherController extends Controller
         // Validate percent discount
         if ($data['discount_type'] === 'percent' && $data['discount_value'] > 100) {
             return response()->json([
-                'message' => 'Validation failed',
+                'message' => 'Phần trăm giảm giá không thể vượt quá 100%.',
                 'errors' => ['discount_value' => ['Phần trăm giảm giá không thể vượt quá 100%']],
             ], 422);
         }
@@ -121,8 +120,10 @@ class AdminVoucherController extends Controller
 
         $voucher = Voucher::findOrFail($id);
 
+        $this->normalizeCode($request);
+
         $validator = Validator::make($request->all(), [
-            'code' => 'nullable|string|max:50|unique:vouchers,code,' . $id,
+            'code' => ['nullable', 'string', 'max:50', 'unique:vouchers,code,' . $id],
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
             'discount_type' => 'required|in:fixed,percent',
@@ -137,13 +138,10 @@ class AdminVoucherController extends Controller
             'applicable_type' => 'nullable|in:all,specific',
             'course_ids' => 'nullable|array',
             'course_ids.*' => 'integer|exists:courses,id',
-        ]);
+        ], self::VALIDATION_MESSAGES, self::VALIDATION_ATTRIBUTES);
 
         if ($validator->fails()) {
-            return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->validationError($validator);
         }
 
         $data = $this->normalizeValidityDates($validator->validated());
@@ -155,7 +153,7 @@ class AdminVoucherController extends Controller
         // Validate percent discount
         if ($data['discount_type'] === 'percent' && $data['discount_value'] > 100) {
             return response()->json([
-                'message' => 'Validation failed',
+                'message' => 'Phần trăm giảm giá không thể vượt quá 100%.',
                 'errors' => ['discount_value' => ['Phần trăm giảm giá không thể vượt quá 100%']],
             ], 422);
         }
@@ -231,6 +229,58 @@ class AdminVoucherController extends Controller
         }
 
         return $data;
+    }
+
+    private const VALIDATION_MESSAGES = [
+        'required' => ':attribute là bắt buộc.',
+        'unique' => ':attribute ":input" đã tồn tại (kể cả voucher đã vô hiệu). Vui lòng dùng mã khác.',
+        'max' => ':attribute tối đa :max ký tự.',
+        'min' => ':attribute phải từ :min trở lên.',
+        'numeric' => ':attribute phải là số.',
+        'integer' => ':attribute phải là số nguyên.',
+        'date' => ':attribute không đúng định dạng ngày giờ.',
+        'after_or_equal' => 'Thời gian kết thúc phải sau thời gian bắt đầu.',
+        'in' => ':attribute không hợp lệ.',
+        'exists' => ':attribute không tồn tại.',
+        'regex' => ':attribute chỉ được gồm chữ không dấu, số, dấu gạch ngang hoặc gạch dưới.',
+    ];
+
+    private const VALIDATION_ATTRIBUTES = [
+        'code' => 'Mã voucher',
+        'name' => 'Tên voucher',
+        'discount_type' => 'Loại giảm giá',
+        'discount_value' => 'Giá trị giảm',
+        'min_order_amount' => 'Đơn tối thiểu',
+        'max_discount' => 'Giảm tối đa',
+        'usage_limit' => 'Giới hạn sử dụng',
+        'usage_per_user' => 'Lượt/người dùng',
+        'valid_from' => 'Thời gian bắt đầu',
+        'valid_until' => 'Thời gian kết thúc',
+        'status' => 'Trạng thái',
+        'applicable_type' => 'Phạm vi áp dụng',
+        'course_ids' => 'Khóa học áp dụng',
+        'course_ids.*' => 'Khóa học áp dụng',
+    ];
+
+    /**
+     * Codes are stored upper-case. Normalise before validating so the unique
+     * check compares the same value that will be saved (" mmaf " vs "MMAF").
+     */
+    private function normalizeCode(Request $request): void
+    {
+        $code = $request->input('code');
+        if (is_string($code)) {
+            $request->merge(['code' => strtoupper(trim($code)) ?: null]);
+        }
+    }
+
+    /** 422 whose message lists the actual problems instead of "Validation failed". */
+    private function validationError($validator)
+    {
+        return response()->json([
+            'message' => implode(' ', $validator->errors()->all()),
+            'errors' => $validator->errors(),
+        ], 422);
     }
 
     private function generateUniqueCode(int $length = 8): string
