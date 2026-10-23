@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Voucher;
 use App\Models\Course;
 use App\Models\CourseSection;
+use App\Models\CourseDurationTier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
@@ -19,6 +20,7 @@ class VoucherController extends Controller
             'code' => 'required|string|max:50',
             'course_id' => 'required|exists:courses,id',
             'section_id' => 'nullable|exists:course_sections,id',
+            'duration_tier_id' => 'nullable|integer',
         ]);
 
         $user = Auth::user();
@@ -39,7 +41,35 @@ class VoucherController extends Controller
             ], 404);
         }
 
-        $orderAmount = $section ? (float) $section->price : (float) $course->price;
+        // Price must be resolved exactly like PaymentController::checkout,
+        // otherwise the preview shown to the student and the real checkout disagree.
+        $tier = null;
+        if (!$section && $request->filled('duration_tier_id')) {
+            $tier = CourseDurationTier::where('course_id', $course->id)
+                ->where('id', $request->integer('duration_tier_id'))
+                ->where('is_active', true)
+                ->first();
+
+            if (!$tier) {
+                return response()->json([
+                    'valid' => false,
+                    'message' => 'Gói thời gian không hợp lệ hoặc đã bị vô hiệu hoá',
+                ], 400);
+            }
+
+            if (!$tier->isAvailableForUser($user->id)) {
+                return response()->json([
+                    'valid' => false,
+                    'message' => 'Gói thời gian này không áp dụng cho tài khoản của bạn',
+                ], 400);
+            }
+        }
+
+        if ($section) {
+            $orderAmount = (float) $section->price;
+        } else {
+            $orderAmount = $tier ? (float) $tier->price : (float) $course->price;
+        }
         $error = $voucher->getValidationError($orderAmount, $user->id, $course->id);
 
         if ($error) {

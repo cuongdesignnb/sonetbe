@@ -16,7 +16,13 @@ class CourseController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Course::with(['instructor', 'category'])
+        // Only public tiers feed the "from" price in listings; private
+        // (user/group-targeted) tiers must not leak their price.
+        $query = Course::with([
+                'instructor',
+                'category',
+                'durationTiers' => fn ($q) => $q->whereDoesntHave('targets'),
+            ])
             ->withAvg([
                 'reviews as reviews_avg_rating' => function ($q) {
                     $q->where('is_approved', true);
@@ -131,10 +137,32 @@ class CourseController extends Controller
         // Replace loaded tiers with filtered ones
         $course->setRelation('durationTiers', $filteredTiers);
 
+        // The student's own full-course access, so the page can show the
+        // expiry date and offer renewal.
+        $myEnrollment = null;
+        if ($user) {
+            $enrollment = Enrollment::with('durationTier')
+                ->where('user_id', $user->id)
+                ->where('course_id', $course->id)
+                ->whereNull('section_id')
+                ->where('status', 'active')
+                ->first();
+            if ($enrollment) {
+                $myEnrollment = [
+                    'tier_label' => $enrollment->durationTier?->label,
+                    'expires_at' => $enrollment->expires_at?->toIso8601String(),
+                    'is_lifetime' => $enrollment->isLifetime(),
+                    'is_expired' => $enrollment->isExpired(),
+                    'days_remaining' => $enrollment->daysRemaining(),
+                ];
+            }
+        }
+
         return response()->json([
             'course' => $course,
             'is_enrolled' => $isEnrolled,
             'price_range' => $course->priceRange(),
+            'my_enrollment' => $myEnrollment,
         ]);
     }
 

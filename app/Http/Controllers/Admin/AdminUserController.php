@@ -71,21 +71,89 @@ class AdminUserController extends Controller
         $user = User::findOrFail($id);
 
         $enrollments = $user->enrollments()
-            ->with(['course' => function ($q) {
-                $q->withTrashed()->select('id', 'title', 'thumbnail', 'price');
+            ->with([
+                'course' => function ($q) {
+                    $q->withTrashed()->select('id', 'title', 'thumbnail', 'price');
+                },
+                'section:id,title,price',
+                'durationTier:id,label,duration_days,price',
+                'latestPayment.voucher:id,code',
+            ])
+            ->withCount(['payments as paid_orders_count' => function ($q) {
+                $q->where('status', 'paid');
             }])
-            ->where('status', 'active')
-            ->get();
+            ->whereIn('status', ['active', 'pending'])
+            ->orderByDesc('enrolled_at')
+            ->get()
+            ->map(function ($e) use ($user) {
+                return [
+                    'id' => $e->id,
+                    'status' => $e->status,
+                    'course' => $e->course ? ['id' => $e->course->id, 'title' => $e->course->title] : null,
+                    'purchase_type' => $e->section_id ? 'chapter' : 'full',
+                    'purchase_label' => $e->purchaseLabel(),
+                    'section' => $e->section ? ['id' => $e->section->id, 'title' => $e->section->title, 'price' => $e->section->price] : null,
+                    'duration_tier' => $e->durationTier ? [
+                        'label' => $e->durationTier->label,
+                        'duration_days' => $e->durationTier->duration_days,
+                        'price' => $e->durationTier->price,
+                    ] : null,
+                    'enrolled_at' => $e->enrolled_at,
+                    'expires_at' => $e->expires_at,
+                    'days_remaining' => $e->daysRemaining(),
+                    'access_state' => $e->accessState(),
+                    'completed_at' => $e->completed_at,
+                    'progress' => $e->course ? $user->getCourseProgress($e->course->id) : 0,
+                    'voucher_code' => $e->latestPayment?->voucher?->code,
+                    'paid_orders_count' => (int) ($e->paid_orders_count ?? 0),
+                ];
+            });
 
         $payments = CoursePayment::where('user_id', $id)
             ->where('status', 'paid')
-            ->with(['course' => function ($q) {
-                $q->withTrashed()->select('id', 'title');
-            }])
+            ->with([
+                'course' => function ($q) {
+                    $q->withTrashed()->select('id', 'title');
+                },
+                'section:id,title',
+                'durationTier:id,label,duration_days',
+                'voucher:id,code',
+            ])
             ->orderByDesc('paid_at')
-            ->get(['id', 'course_id', 'amount', 'order_code', 'paid_at', 'product_type']);
+            ->get()
+            ->map(function ($p) {
+                if ($p->product_type === 'chapter' || $p->section_id) {
+                    $label = 'Chương lẻ' . ($p->section ? ': ' . $p->section->title : '');
+                } elseif (in_array($p->product_type, ['ebook', 'webinar'], true)) {
+                    $label = $p->product_type === 'ebook' ? 'Ebook' : 'Webinar';
+                } else {
+                    $label = 'Toàn khoá' . ($p->durationTier ? ' · ' . $p->durationTier->label : '');
+                }
 
-        $totalRevenue = $payments->sum('amount');
+                $code = (string) $p->order_code;
+                $source = match (true) {
+                    str_starts_with($code, 'MANUAL-') => 'manual',
+                    str_starts_with($code, 'BULK-') => 'bulk',
+                    str_starts_with($code, 'FREE-') => $p->voucher_id ? 'voucher' : 'free',
+                    default => 'sepay',
+                };
+
+                return [
+                    'id' => $p->id,
+                    'order_code' => $p->order_code,
+                    'product_type' => $p->product_type,
+                    'product_label' => $label,
+                    'course' => $p->course ? ['id' => $p->course->id, 'title' => $p->course->title] : null,
+                    'original_amount' => $p->original_amount,
+                    'discount_amount' => $p->discount_amount,
+                    'amount' => $p->amount,
+                    'voucher_code' => $p->voucher?->code,
+                    'source' => $source,
+                    'paid_at' => $p->paid_at,
+                ];
+            });
+
+        $totalRevenue = $payments->sum(fn ($p) => (float) $p['amount']);
 
         return response()->json([
             'user' => $user,
@@ -101,9 +169,13 @@ class AdminUserController extends Controller
 
         $query = User::query()
             ->with(['enrollments' => function ($q) {
-                $q->where('status', 'active')->with(['course' => function ($cq) {
-                    $cq->withTrashed()->select('id', 'title');
-                }]);
+                $q->where('status', 'active')->with([
+                    'course' => function ($cq) {
+                        $cq->withTrashed()->select('id', 'title');
+                    },
+                    'section:id,title',
+                    'durationTier:id,label',
+                ]);
             }]);
 
         if ($request->filled('search')) {
@@ -151,7 +223,19 @@ class AdminUserController extends Controller
         $csv = $bom . "ID,Họ tên,Email,Điện thoại,Vai trò,Trạng thái,Khóa học đã đăng ký,Doanh thu (VNĐ),Ngày tạo\n";
 
         foreach ($users as $user) {
-            $courseNames = $user->enrollments->map(fn($e) => $e->course?->title ?? '')->filter()->implode(' | ');
+            // e.g. "AI FOR AFFILIATE (Toàn khoá · 3 tháng, hạn 20/01/2027)"
+            $courseNames = $user->enrollments->map(function ($e) {
+                if (!$e->course) {
+                    return '';
+                }
+                $label = $e->purchaseLabel();
+                if ($e->expires_at) {
+                    $label .= ', ' . ($e->isExpired() ? 'hết hạn ' : 'hạn ') . $e->expires_at->format('d/m/Y');
+                } elseif (!str_ends_with($label, 'Vĩnh viễn')) {
+                    $label .= ', vĩnh viễn';
+                }
+                return $e->course->title . ' (' . $label . ')';
+            })->filter()->implode(' | ');
             $revenue = $revenues[$user->id] ?? 0;
             $status = $user->is_active ? 'Hoạt động' : 'Khóa';
             $roleMap = ['admin' => 'Admin', 'instructor' => 'Giảng viên', 'student' => 'Học viên'];

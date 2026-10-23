@@ -1773,12 +1773,22 @@
               />
             </label>
             <label class="label">
-              <span>Stream Hostname</span>
+              <span>Embed Hostname</span>
+              <input
+                v-model="form.bunnycdn.embed_hostname"
+                class="input"
+                placeholder="iframe.mediadelivery.net"
+              />
+              <small class="muted">Hostname dùng cho Bunny iframe player.</small>
+            </label>
+            <label class="label">
+              <span>Stream Pull Zone Hostname</span>
               <input
                 v-model="form.bunnycdn.stream_hostname"
                 class="input"
                 placeholder="vz-xxxxx.b-cdn.net"
               />
+              <small class="muted">Hostname Direct Play/HLS; để trống nếu chưa xác minh với Bunny.</small>
             </label>
           </div>
         </div>
@@ -2152,6 +2162,7 @@ type SettingsPayload = {
     pull_zone_url: string;
     video_library_id: string;
     video_api_key: string;
+    embed_hostname: string;
     stream_hostname: string;
     token_auth_key: string;
     enable_token_auth: boolean;
@@ -2347,6 +2358,7 @@ const form = ref<SettingsPayload>({
     pull_zone_url: "",
     video_library_id: "",
     video_api_key: "",
+    embed_hostname: "iframe.mediadelivery.net",
     stream_hostname: "",
     token_auth_key: "",
     enable_token_auth: false,

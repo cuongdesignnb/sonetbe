@@ -240,35 +240,31 @@
                   class="detail-list-item"
                 >
                   <div style="flex: 1; min-width: 0">
-                    <div
-                      style="
-                        font-weight: 600;
-                        font-size: 14px;
-                        white-space: nowrap;
-                        overflow: hidden;
-                        text-overflow: ellipsis;
-                      "
-                    >
+                    <div class="enr-title">
                       {{ e.course?.title || "Khóa học đã xóa" }}
                     </div>
-                    <div
-                      style="
-                        font-size: 12px;
-                        color: var(--gray-400, #94a3b8);
-                        margin-top: 2px;
-                      "
+                    <span
+                      :class="['enr-tag', e.purchase_type === 'chapter' ? 'enr-tag-chapter' : 'enr-tag-full']"
+                      :title="e.purchase_label"
                     >
-                      Đăng ký
-                      {{
-                        e.enrolled_at
-                          ? new Date(e.enrolled_at).toLocaleDateString("vi-VN")
-                          : "—"
-                      }}
+                      {{ e.purchase_label }}
+                    </span>
+                    <div class="enr-meta">
+                      Đăng ký {{ fmtDay(e.enrolled_at) }}
+                      <template v-if="e.expires_at">
+                        · {{ e.access_state === "expired" ? "Hết hạn" : "Hạn đến" }} {{ fmtDay(e.expires_at) }}
+                      </template>
+                      <template v-if="e.voucher_code"> · Voucher {{ e.voucher_code }}</template>
+                      <template v-if="e.paid_orders_count > 1"> · {{ e.paid_orders_count }} lần mua/gia hạn</template>
+                    </div>
+                    <div class="enr-meta">
+                      Tiến độ học: {{ Math.round(e.progress || 0) }}%
+                      <template v-if="e.completed_at"> · ✓ Đã học xong {{ fmtDay(e.completed_at) }}</template>
                     </div>
                   </div>
-                  <span class="badge badge-success" style="font-size: 11px">{{
-                    e.status
-                  }}</span>
+                  <span :class="['badge', accessBadge(e.access_state)]" style="font-size: 11px; white-space: nowrap">
+                    {{ accessText(e) }}
+                  </span>
                 </div>
               </div>
               <div v-else class="detail-empty">Chưa đăng ký khóa học nào</div>
@@ -296,17 +292,18 @@
                     "
                   >
                     <span class="detail-order-code">{{ p.order_code }}</span>
-                    <span
-                      style="
-                        font-size: 13px;
-                        color: var(--gray-600, #475569);
-                        white-space: nowrap;
-                        overflow: hidden;
-                        text-overflow: ellipsis;
-                      "
-                    >
-                      {{ p.course?.title || "—" }}
-                    </span>
+                    <div style="min-width: 0">
+                      <div class="enr-title" style="font-size: 13px">
+                        {{ p.course?.title || "—" }}
+                      </div>
+                      <div class="enr-meta">
+                        {{ p.product_label }} ·
+                        <template v-if="p.source === 'voucher' && p.voucher_code">Voucher {{ p.voucher_code }} (100%)</template>
+                        <template v-else>
+                          {{ sourceText(p.source) }}<template v-if="p.voucher_code"> · Voucher {{ p.voucher_code }}</template>
+                        </template>
+                      </div>
+                    </div>
                   </div>
                   <div
                     style="
@@ -323,7 +320,10 @@
                         color: var(--success, #22c55e);
                       "
                     >
-                      {{ formatCurrency(p.amount) }}
+                      <span
+                        v-if="Number(p.discount_amount) > 0"
+                        style="font-weight: 400; font-size: 12px; color: var(--gray-400, #94a3b8); text-decoration: line-through; margin-right: 6px"
+                      >{{ formatCurrency(p.original_amount) }}</span>{{ formatCurrency(p.amount) }}
                     </span>
                     <span
                       style="
@@ -511,6 +511,50 @@ const detailUser = ref<any>(null);
 const detailEnrollments = ref<any[]>([]);
 const detailPayments = ref<any[]>([]);
 const detailRevenue = ref(0);
+
+function fmtDay(value?: string | null) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("vi-VN");
+}
+
+function accessText(e: { access_state?: string; days_remaining?: number | null }) {
+  switch (e.access_state) {
+    case "pending":
+      return "Chờ thanh toán";
+    case "lifetime":
+      return "Vĩnh viễn";
+    case "expired":
+      return "Đã hết hạn";
+    case "active":
+    case "expiring":
+      return `Còn ${e.days_remaining ?? 0} ngày`;
+    default:
+      return e.access_state || "—";
+  }
+}
+
+function accessBadge(state?: string) {
+  if (state === "active") return "badge-success";
+  if (state === "expiring" || state === "pending") return "badge-warning";
+  if (state === "expired") return "badge-danger";
+  return "badge-info";
+}
+
+function sourceText(source?: string) {
+  switch (source) {
+    case "manual":
+      return "Admin thêm thủ công";
+    case "bulk":
+      return "Mở khoá hàng loạt";
+    case "voucher":
+      return "Voucher 100%";
+    case "free":
+      return "Miễn phí";
+    default:
+      return "Chuyển khoản SePay";
+  }
+}
 
 const allSelected = computed(
   () =>
@@ -784,6 +828,44 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.enr-title {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.enr-tag {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.enr-tag-full {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--primary, #4f46e5);
+}
+
+.enr-tag-chapter {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+.enr-meta {
+  font-size: 12px;
+  color: var(--gray-400, #94a3b8);
+  margin-top: 3px;
+}
+
 .detail-avatar {
   width: 48px;
   height: 48px;

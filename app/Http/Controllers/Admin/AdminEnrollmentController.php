@@ -27,22 +27,57 @@ class AdminEnrollmentController extends Controller
     {
         $this->ensureAdmin();
 
-        $query = Enrollment::query()->with(['user', 'course', 'latestPayment']);
+        $query = Enrollment::query()->with([
+            'user',
+            'course',
+            'section',
+            'durationTier',
+            'latestPayment.voucher',
+        ])->withCount(['payments as paid_orders_count' => function ($q) {
+            $q->where('status', 'paid');
+        }]);
 
         if ($request->filled('course_id')) {
             $query->where('course_id', $request->integer('course_id'));
         }
 
         if ($request->filled('status')) {
-            $query->where('status', $request->string('status')->toString());
+            $status = $request->string('status')->toString();
+            if ($status === 'completed') {
+                // Completion is tracked by completed_at; status stays "active".
+                $query->whereNotNull('completed_at');
+            } else {
+                $query->where('status', $status);
+            }
+        }
+
+        // What was bought: the whole course or a single chapter.
+        if ($request->filled('type')) {
+            $type = $request->string('type')->toString();
+            if ($type === 'full') {
+                $query->whereNull('section_id');
+            } elseif ($type === 'chapter') {
+                $query->whereNotNull('section_id');
+            }
         }
 
         if ($request->filled('payment_status')) {
             $paymentStatus = $request->string('payment_status')->toString();
             if ($paymentStatus === 'free') {
+                // Free / 100% voucher: no order at all (legacy) or a 0đ paid order.
                 $query->where(function ($q) {
-                    $q->where('amount_paid', 0)->orWhereNull('amount_paid');
-                })->whereDoesntHave('latestPayment');
+                    $q->where(function ($q) {
+                        $q->where(function ($q) {
+                            $q->where('amount_paid', 0)->orWhereNull('amount_paid');
+                        })->whereDoesntHave('latestPayment');
+                    })->orWhereHas('latestPayment', function ($q) {
+                        $q->where('status', 'paid')->where('amount', 0);
+                    });
+                });
+            } elseif ($paymentStatus === 'paid') {
+                $query->whereHas('latestPayment', function ($q) {
+                    $q->where('status', 'paid')->where('amount', '>', 0);
+                });
             } else {
                 $query->whereHas('latestPayment', function ($q) use ($paymentStatus) {
                     $q->where('status', $paymentStatus);
@@ -54,8 +89,46 @@ class AdminEnrollmentController extends Controller
             $search = $request->string('search')->toString();
             $query->whereHas('user', function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
+                    ->orWhere('email', 'like', "%{$search}%")
+                    ->orWhere('phone', 'like', "%{$search}%");
             });
+        }
+
+        // Counts for the quick-filter chips, computed before the access filter
+        // so they always show the whole picture for the other filters.
+        $now = now();
+        $count = fn (callable $scope) => $scope((clone $query))->count();
+        $summary = [
+            'lifetime' => $count(fn ($q) => $q->where('status', 'active')->whereNull('expires_at')),
+            'active' => $count(fn ($q) => $q->where('status', 'active')->where('expires_at', '>', $now->copy()->addDays(7))),
+            'expiring' => $count(fn ($q) => $q->where('status', 'active')->where('expires_at', '>', $now)->where('expires_at', '<=', $now->copy()->addDays(7))),
+            'expired' => $count(fn ($q) => $q->where('status', 'active')->where('expires_at', '<=', $now)),
+            'pending' => $count(fn ($q) => $q->where('status', 'pending')),
+            'chapter' => $count(fn ($q) => $q->whereNotNull('section_id')),
+        ];
+
+        // Remaining access time.
+        if ($request->filled('access')) {
+            $now = now();
+            switch ($request->string('access')->toString()) {
+                case 'lifetime':
+                    $query->where('status', 'active')->whereNull('expires_at');
+                    break;
+                case 'active':
+                    $query->where('status', 'active')->where('expires_at', '>', $now->copy()->addDays(7));
+                    break;
+                case 'expiring':
+                    $query->where('status', 'active')
+                        ->where('expires_at', '>', $now)
+                        ->where('expires_at', '<=', $now->copy()->addDays(7));
+                    break;
+                case 'expired':
+                    $query->where('status', 'active')->where('expires_at', '<=', $now);
+                    break;
+                case 'pending':
+                    $query->where('status', 'pending');
+                    break;
+            }
         }
 
         $items = $query->orderByDesc('created_at')->get();
@@ -63,7 +136,8 @@ class AdminEnrollmentController extends Controller
         $data = $items->map(function ($enrollment) {
             $payment = $enrollment->latestPayment;
             $paymentStatus = $payment?->status;
-            if (!$payment && (float) ($enrollment->amount_paid ?? 0) <= 0) {
+            if ((!$payment && (float) ($enrollment->amount_paid ?? 0) <= 0)
+                || ($payment && $payment->status === 'paid' && (float) $payment->amount <= 0)) {
                 $paymentStatus = 'free';
             }
 
@@ -72,12 +146,30 @@ class AdminEnrollmentController extends Controller
                 'status' => $enrollment->status,
                 'enrolled_at' => $enrollment->enrolled_at,
                 'completed_at' => $enrollment->completed_at,
+                'expires_at' => $enrollment->expires_at,
+                'days_remaining' => $enrollment->daysRemaining(),
+                'access_state' => $enrollment->accessState(),
+                'purchase_type' => $enrollment->section_id ? 'chapter' : 'full',
+                'purchase_label' => $enrollment->purchaseLabel(),
+                'section' => $enrollment->section ? [
+                    'id' => $enrollment->section->id,
+                    'title' => $enrollment->section->title,
+                    'price' => $enrollment->section->price,
+                ] : null,
+                'duration_tier' => $enrollment->durationTier ? [
+                    'id' => $enrollment->durationTier->id,
+                    'label' => $enrollment->durationTier->label,
+                    'duration_days' => $enrollment->durationTier->duration_days,
+                    'price' => $enrollment->durationTier->price,
+                ] : null,
+                'paid_orders_count' => (int) ($enrollment->paid_orders_count ?? 0),
                 'amount_paid' => $enrollment->amount_paid,
                 'created_at' => $enrollment->created_at,
                 'user' => $enrollment->user ? [
                     'id' => $enrollment->user->id,
                     'name' => $enrollment->user->name,
                     'email' => $enrollment->user->email,
+                    'phone' => $enrollment->user->phone,
                 ] : null,
                 'course' => $enrollment->course ? [
                     'id' => $enrollment->course->id,
@@ -89,6 +181,9 @@ class AdminEnrollmentController extends Controller
                     'id' => $payment->id,
                     'status' => $payment->status,
                     'amount' => $payment->amount,
+                    'original_amount' => $payment->original_amount,
+                    'discount_amount' => $payment->discount_amount,
+                    'voucher_code' => $payment->voucher?->code,
                     'order_code' => $payment->order_code,
                     'paid_at' => $payment->paid_at,
                     'sepay_txn_id' => $payment->sepay_txn_id,
@@ -97,7 +192,10 @@ class AdminEnrollmentController extends Controller
             ];
         });
 
-        return response()->json(['data' => $data]);
+        return response()->json([
+            'data' => $data,
+            'summary' => ['total' => $data->count()] + $summary,
+        ]);
     }
 
     /**
@@ -156,23 +254,31 @@ class AdminEnrollmentController extends Controller
             }
         }
 
-        // Check if already enrolled
+        // Check if already enrolled in the full course (chapter rows are separate)
         $existing = Enrollment::where('user_id', $userId)
             ->where('course_id', $courseId)
+            ->whereNull('section_id')
             ->first();
 
-        if ($existing && in_array($existing->status, ['active', 'completed']) && !$existing->isExpired()) {
+        if ($existing && $existing->isAccessible() && $existing->isLifetime()) {
             return response()->json([
-                'message' => 'Học viên đã được đăng ký khóa học này rồi và vẫn còn hiệu lực.',
+                'message' => 'Học viên đã có quyền học vĩnh viễn khóa học này.',
             ], 409);
         }
 
-        return DB::transaction(function () use ($userId, $courseId, $amount, $note, $existing, $tier, $tierId, $expiresAt) {
+        // Still-valid time-limited access is extended (days are added on top of
+        // the remaining ones) — this is how an admin renews a student manually.
+        $isRenewal = $existing && $existing->isAccessible();
+        if ($existing) {
+            $expiresAt = $existing->accessExpiryAfterPurchase($tier?->duration_days);
+        }
+
+        return DB::transaction(function () use ($userId, $courseId, $amount, $note, $existing, $tier, $tierId, $expiresAt, $isRenewal) {
             // Create or update enrollment
             if ($existing) {
                 $existing->update([
                     'status' => 'active',
-                    'enrolled_at' => now(),
+                    'enrolled_at' => $isRenewal ? $existing->enrolled_at : now(),
                     'amount_paid' => $amount,
                     'duration_tier_id' => $tierId,
                     'expires_at' => $expiresAt,
@@ -219,7 +325,9 @@ class AdminEnrollmentController extends Controller
             $enrollment->load(['user', 'course', 'durationTier']);
 
             return response()->json([
-                'message' => 'Đã thêm học viên vào khóa học thành công.',
+                'message' => $isRenewal
+                    ? 'Đã gia hạn khóa học cho học viên.'
+                    : 'Đã thêm học viên vào khóa học thành công.',
                 'enrollment' => [
                     'id' => $enrollment->id,
                     'user' => $enrollment->user ? [
@@ -238,6 +346,167 @@ class AdminEnrollmentController extends Controller
                 ],
             ], 201);
         });
+    }
+
+    /**
+     * Grant (or restore) full-course access to many students at once.
+     * Students are identified by email or phone number, one per line
+     * (commas / semicolons also accepted). Each result is reported back
+     * so the admin can see who was unlocked, who already had access and
+     * which identifiers did not match any account.
+     */
+    public function bulkEnroll(Request $request)
+    {
+        $this->ensureAdmin();
+
+        $validator = Validator::make($request->all(), [
+            'identifiers' => 'required|string|max:50000',
+            'course_id' => 'required|integer|exists:courses,id',
+            'duration_tier_id' => 'nullable|integer|exists:course_duration_tiers,id',
+            'note' => 'nullable|string|max:500',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Dữ liệu không hợp lệ.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $courseId = $request->integer('course_id');
+        $tierId = $request->input('duration_tier_id') ?: null;
+        $note = (string) $request->input('note', '');
+
+        $tier = null;
+        if ($tierId) {
+            $tier = \App\Models\CourseDurationTier::where('id', $tierId)
+                ->where('course_id', $courseId)
+                ->first();
+
+            if (!$tier) {
+                return response()->json([
+                    'message' => 'Gói thời gian không thuộc khóa học này.',
+                ], 422);
+            }
+        }
+
+        $identifiers = collect(preg_split('/[\r\n,;]+/', $request->input('identifiers')))
+            ->map(fn ($v) => trim($v))
+            ->filter()
+            ->unique(fn ($v) => mb_strtolower($v))
+            ->values();
+
+        if ($identifiers->isEmpty()) {
+            return response()->json(['message' => 'Vui lòng nhập ít nhất một email hoặc số điện thoại.'], 422);
+        }
+
+        if ($identifiers->count() > 500) {
+            return response()->json(['message' => 'Tối đa 500 học viên mỗi lần.'], 422);
+        }
+
+        $results = [];
+        $summary = ['created' => 0, 'reactivated' => 0, 'already_active' => 0, 'not_found' => 0, 'ambiguous' => 0];
+
+        foreach ($identifiers as $identifier) {
+            $users = str_contains($identifier, '@')
+                ? User::whereRaw('LOWER(email) = ?', [mb_strtolower($identifier)])->limit(2)->get()
+                : User::where('phone', $identifier)->limit(2)->get();
+
+            if ($users->isEmpty()) {
+                $summary['not_found']++;
+                $results[] = ['identifier' => $identifier, 'result' => 'not_found'];
+                continue;
+            }
+
+            if ($users->count() > 1) {
+                $summary['ambiguous']++;
+                $results[] = ['identifier' => $identifier, 'result' => 'ambiguous'];
+                continue;
+            }
+
+            $user = $users->first();
+
+            $outcome = DB::transaction(function () use ($user, $courseId, $tier, $note) {
+                $existing = Enrollment::where('user_id', $user->id)
+                    ->where('course_id', $courseId)
+                    ->whereNull('section_id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($existing && in_array($existing->status, ['active', 'completed']) && !$existing->isExpired()) {
+                    if ($existing->status === 'completed') {
+                        $existing->update(['status' => 'active']);
+                        return ['result' => 'reactivated', 'enrollment' => $existing];
+                    }
+                    return ['result' => 'already_active', 'enrollment' => $existing];
+                }
+
+                $expiresAt = $tier && $tier->duration_days ? now()->addDays($tier->duration_days) : null;
+                $attributes = [
+                    'status' => 'active',
+                    'enrolled_at' => now(),
+                    'amount_paid' => 0,
+                    'duration_tier_id' => $tier?->id,
+                    'expires_at' => $expiresAt,
+                ];
+
+                if ($existing) {
+                    $existing->update($attributes);
+                    $enrollment = $existing;
+                    $result = 'reactivated';
+                } else {
+                    $enrollment = Enrollment::create($attributes + [
+                        'user_id' => $user->id,
+                        'course_id' => $courseId,
+                        'section_id' => null,
+                    ]);
+                    $result = 'created';
+                }
+
+                // Audit trail, same shape as manual enrollment (amount 0).
+                CoursePayment::create([
+                    'product_type' => 'course',
+                    'user_id' => $user->id,
+                    'course_id' => $courseId,
+                    'enrollment_id' => $enrollment->id,
+                    'duration_tier_id' => $tier?->id,
+                    'order_code' => 'BULK-' . strtoupper(uniqid()) . '-' . $user->id,
+                    'amount' => 0,
+                    'original_amount' => 0,
+                    'discount_amount' => 0,
+                    'transfer_amount' => 0,
+                    'status' => 'paid',
+                    'paid_at' => now(),
+                    'raw_payload' => json_encode([
+                        'type' => 'bulk_unlock',
+                        'admin_id' => Auth::id(),
+                        'admin_name' => Auth::user()->name ?? '',
+                        'note' => $note,
+                        'duration_tier_id' => $tier?->id,
+                        'expires_at' => $expiresAt?->toIso8601String(),
+                        'created_at' => now()->toIso8601String(),
+                    ]),
+                ]);
+
+                return ['result' => $result, 'enrollment' => $enrollment];
+            });
+
+            $summary[$outcome['result']]++;
+            $results[] = [
+                'identifier' => $identifier,
+                'result' => $outcome['result'],
+                'user' => ['id' => $user->id, 'name' => $user->name, 'email' => $user->email],
+                'expires_at' => $outcome['enrollment']->expires_at?->toIso8601String(),
+            ];
+        }
+
+        $unlocked = $summary['created'] + $summary['reactivated'];
+
+        return response()->json([
+            'message' => "Đã mở khoá cho {$unlocked} học viên.",
+            'summary' => $summary,
+            'results' => $results,
+        ]);
     }
 
     public function stats()

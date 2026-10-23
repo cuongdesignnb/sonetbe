@@ -139,7 +139,8 @@ class BlockDownloadBrowsers
             'browser' => $browserName,
             'user_agent' => $request->header('User-Agent'),
             'ip' => $request->ip(),
-            'url' => $request->fullUrl(),
+            // Never include query strings in logs; playback URLs carry bearer tokens.
+            'path' => $request->path(),
             'timestamp' => now()->toIso8601String(),
         ]);
 
