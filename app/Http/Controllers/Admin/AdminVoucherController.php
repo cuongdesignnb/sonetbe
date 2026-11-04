@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Voucher;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
@@ -37,7 +38,7 @@ class AdminVoucherController extends Controller
             $query->where('status', $request->status);
         }
 
-        return response()->json($query->with('courses:id,title')->paginate(20));
+        return response()->json($query->with($this->targetRelations())->paginate(20));
     }
 
     public function show($id)
@@ -45,7 +46,7 @@ class AdminVoucherController extends Controller
         $this->ensureAdmin();
 
         $voucher = Voucher::withCount('usages')->findOrFail($id);
-        $voucher->load('courses:id,title');
+        $voucher->load($this->targetRelations());
 
         return response()->json(['voucher' => $voucher]);
     }
@@ -54,8 +55,10 @@ class AdminVoucherController extends Controller
     {
         $this->ensureAdmin();
 
+        $this->normalizeCode($request);
+
         $validator = Validator::make($request->all(), [
-            'code' => 'nullable|string|max:50|unique:vouchers,code',
+            'code' => ['nullable', 'string', 'max:50', 'regex:/^[A-Z0-9_-]+$/', 'unique:vouchers,code'],
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
             'discount_type' => 'required|in:fixed,percent',
@@ -67,19 +70,18 @@ class AdminVoucherController extends Controller
             'valid_from' => 'nullable|date',
             'valid_until' => 'nullable|date|after_or_equal:valid_from',
             'status' => 'nullable|in:active,inactive',
-            'applicable_type' => 'nullable|in:all,specific',
+            'applicable_type' => 'nullable|in:all,specific,sections',
             'course_ids' => 'nullable|array',
             'course_ids.*' => 'integer|exists:courses,id',
-        ]);
+            'section_ids' => 'nullable|array|required_if:applicable_type,sections',
+            'section_ids.*' => 'integer|exists:course_sections,id',
+        ], self::VALIDATION_MESSAGES, self::VALIDATION_ATTRIBUTES);
 
         if ($validator->fails()) {
-            return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->validationError($validator);
         }
 
-        $data = $validator->validated();
+        $data = $this->normalizeValidityDates($validator->validated());
         
         // Generate code if not provided
         if (empty($data['code'])) {
@@ -94,19 +96,16 @@ class AdminVoucherController extends Controller
         // Validate percent discount
         if ($data['discount_type'] === 'percent' && $data['discount_value'] > 100) {
             return response()->json([
-                'message' => 'Validation failed',
+                'message' => 'Phần trăm giảm giá không thể vượt quá 100%.',
                 'errors' => ['discount_value' => ['Phần trăm giảm giá không thể vượt quá 100%']],
             ], 422);
         }
 
         $voucher = Voucher::create($data);
 
-        // Sync course targeting
-        if (($data['applicable_type'] ?? 'all') === 'specific' && !empty($request->course_ids)) {
-            $voucher->courses()->sync($request->course_ids);
-        }
+        $this->syncTargets($voucher, $request, $data['applicable_type'] ?? 'all');
 
-        $voucher->load('courses:id,title');
+        $voucher->load($this->targetRelations());
 
         return response()->json([
             'message' => 'Tạo voucher thành công',
@@ -120,8 +119,10 @@ class AdminVoucherController extends Controller
 
         $voucher = Voucher::findOrFail($id);
 
+        $this->normalizeCode($request);
+
         $validator = Validator::make($request->all(), [
-            'code' => 'nullable|string|max:50|unique:vouchers,code,' . $id,
+            'code' => ['nullable', 'string', 'max:50', 'unique:vouchers,code,' . $id],
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
             'discount_type' => 'required|in:fixed,percent',
@@ -133,19 +134,18 @@ class AdminVoucherController extends Controller
             'valid_from' => 'nullable|date',
             'valid_until' => 'nullable|date|after_or_equal:valid_from',
             'status' => 'nullable|in:active,inactive,expired',
-            'applicable_type' => 'nullable|in:all,specific',
+            'applicable_type' => 'nullable|in:all,specific,sections',
             'course_ids' => 'nullable|array',
             'course_ids.*' => 'integer|exists:courses,id',
-        ]);
+            'section_ids' => 'nullable|array|required_if:applicable_type,sections',
+            'section_ids.*' => 'integer|exists:course_sections,id',
+        ], self::VALIDATION_MESSAGES, self::VALIDATION_ATTRIBUTES);
 
         if ($validator->fails()) {
-            return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->validationError($validator);
         }
 
-        $data = $validator->validated();
+        $data = $this->normalizeValidityDates($validator->validated());
 
         if (!empty($data['code'])) {
             $data['code'] = strtoupper(trim($data['code']));
@@ -154,21 +154,16 @@ class AdminVoucherController extends Controller
         // Validate percent discount
         if ($data['discount_type'] === 'percent' && $data['discount_value'] > 100) {
             return response()->json([
-                'message' => 'Validation failed',
+                'message' => 'Phần trăm giảm giá không thể vượt quá 100%.',
                 'errors' => ['discount_value' => ['Phần trăm giảm giá không thể vượt quá 100%']],
             ], 422);
         }
 
         $voucher->update($data);
 
-        // Sync course targeting
-        if (($data['applicable_type'] ?? $voucher->applicable_type) === 'specific' && $request->has('course_ids')) {
-            $voucher->courses()->sync($request->course_ids ?? []);
-        } elseif (($data['applicable_type'] ?? null) === 'all') {
-            $voucher->courses()->detach();
-        }
+        $this->syncTargets($voucher, $request, $data['applicable_type'] ?? $voucher->applicable_type);
 
-        $voucher->load('courses:id,title');
+        $voucher->load($this->targetRelations());
 
         return response()->json([
             'message' => 'Cập nhật voucher thành công',
@@ -210,6 +205,111 @@ class AdminVoucherController extends Controller
         ];
 
         return response()->json($stats);
+    }
+
+    /**
+     * The admin panel sends valid_from / valid_until as ISO-8601 instants
+     * (with offset). Convert them to the app timezone before storing, since
+     * the datetime cast stores the wall-clock value as-is and validity is
+     * compared against now() in the app timezone. Without this the voucher
+     * window shifts by the difference between the admin's timezone and the
+     * server's (7 hours for Vietnam vs UTC).
+     */
+    private function normalizeValidityDates(array $data): array
+    {
+        foreach (['valid_from', 'valid_until'] as $field) {
+            if (!empty($data[$field])) {
+                $data[$field] = Carbon::parse($data[$field])
+                    ->setTimezone(config('app.timezone'));
+            }
+        }
+
+        return $data;
+    }
+
+    private const VALIDATION_MESSAGES = [
+        'required' => ':attribute là bắt buộc.',
+        'unique' => ':attribute ":input" đã tồn tại (kể cả voucher đã vô hiệu). Vui lòng dùng mã khác.',
+        'max' => ':attribute tối đa :max ký tự.',
+        'min' => ':attribute phải từ :min trở lên.',
+        'numeric' => ':attribute phải là số.',
+        'integer' => ':attribute phải là số nguyên.',
+        'date' => ':attribute không đúng định dạng ngày giờ.',
+        'after_or_equal' => 'Thời gian kết thúc phải sau thời gian bắt đầu.',
+        'in' => ':attribute không hợp lệ.',
+        'exists' => ':attribute không tồn tại.',
+        'regex' => ':attribute chỉ được gồm chữ không dấu, số, dấu gạch ngang hoặc gạch dưới.',
+        'section_ids.required_if' => 'Vui lòng chọn ít nhất một chương áp dụng.',
+    ];
+
+    private const VALIDATION_ATTRIBUTES = [
+        'code' => 'Mã voucher',
+        'name' => 'Tên voucher',
+        'discount_type' => 'Loại giảm giá',
+        'discount_value' => 'Giá trị giảm',
+        'min_order_amount' => 'Đơn tối thiểu',
+        'max_discount' => 'Giảm tối đa',
+        'usage_limit' => 'Giới hạn sử dụng',
+        'usage_per_user' => 'Lượt/người dùng',
+        'valid_from' => 'Thời gian bắt đầu',
+        'valid_until' => 'Thời gian kết thúc',
+        'status' => 'Trạng thái',
+        'applicable_type' => 'Phạm vi áp dụng',
+        'course_ids' => 'Khóa học áp dụng',
+        'course_ids.*' => 'Khóa học áp dụng',
+        'section_ids' => 'Chương áp dụng',
+        'section_ids.*' => 'Chương áp dụng',
+    ];
+
+    /** Courses / chapters a voucher targets, with each chapter's course title. */
+    private function targetRelations(): array
+    {
+        return [
+            'courses:id,title',
+            'sections' => fn ($q) => $q
+                ->select('course_sections.id', 'course_sections.title', 'course_sections.course_id')
+                ->with('course:id,title'),
+        ];
+    }
+
+    /** Keep only the targets matching the chosen scope. */
+    private function syncTargets(Voucher $voucher, Request $request, string $type): void
+    {
+        if ($type === 'specific') {
+            if ($request->has('course_ids')) {
+                $voucher->courses()->sync($request->input('course_ids') ?? []);
+            }
+            $voucher->sections()->detach();
+        } elseif ($type === 'sections') {
+            if ($request->has('section_ids')) {
+                $voucher->sections()->sync($request->input('section_ids') ?? []);
+            }
+            $voucher->courses()->detach();
+        } else {
+            $voucher->courses()->detach();
+            $voucher->sections()->detach();
+        }
+    }
+
+    /**
+     * Codes are stored upper-case. Normalise before validating so the unique
+     * check compares the same value that will be saved (" mmaf " vs "MMAF").
+     */
+    private function normalizeCode(Request $request): void
+    {
+        $code = $request->input('code');
+        if (is_string($code)) {
+            $request->merge(['code' => strtoupper(trim($code)) ?: null]);
+        }
+    }
+
+    /** 422 whose message lists the actual problems instead of "Validation failed". */
+    private function validationError($validator)
+    {
+        return response()->json([
+            'message' => implode(' ', $validator->errors()->all()),
+            'errors' => $validator->errors(),
+        ], 422);
     }
 
     private function generateUniqueCode(int $length = 8): string

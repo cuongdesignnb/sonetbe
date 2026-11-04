@@ -153,23 +153,26 @@ class SePayWebhookController extends Controller
         } else {
             $enrollment = Enrollment::query()->whereKey($payment->enrollment_id)->first();
             if ($enrollment) {
-                // Calculate expiry from duration tier
-                $expiresAt = null;
-                if ($payment->duration_tier_id) {
-                    $tier = $payment->durationTier;
-                    if ($tier && $tier->duration_days) {
-                        $expiresAt = now()->addDays($tier->duration_days);
-                    }
-                }
+                // Expiry from the purchased tier (no tier = lifetime). A renewal
+                // of a still-valid enrollment is added on top of the remaining
+                // days instead of restarting from today.
+                $durationDays = $payment->duration_tier_id
+                    ? $payment->durationTier?->duration_days
+                    : null;
+                $wasAccessible = $enrollment->isAccessible();
 
-                $enrollment->update([
+                $attributes = [
                     'status' => 'active',
-                    'enrolled_at' => now(),
                     'amount_paid' => $payment->amount,
                     'payment_id' => (string) $sepayId,
                     'duration_tier_id' => $payment->duration_tier_id,
-                    'expires_at' => $expiresAt,
-                ]);
+                    'expires_at' => $enrollment->accessExpiryAfterPurchase($durationDays),
+                ];
+                if (!$wasAccessible) {
+                    $attributes['enrolled_at'] = now();
+                }
+
+                $enrollment->update($attributes);
             }
         }
 

@@ -68,6 +68,11 @@ export async function apiForm<T>(path: string, form: FormData): Promise<T> {
 export function extractMessage(err: unknown): string {
   if (err instanceof HttpError) {
     const data = err.data as ApiError | null;
+    // Laravel validation: "Validation failed" alone does not say what is wrong.
+    if (data?.errors && (!data.message || /validation failed|given data was invalid/i.test(data.message))) {
+      const details = Object.values(data.errors).flat().filter(Boolean);
+      if (details.length) return details.join(" ");
+    }
     if (data?.message) return data.message;
     return `HTTP ${err.status}`;
   }

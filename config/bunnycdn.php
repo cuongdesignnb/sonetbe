@@ -9,8 +9,9 @@ return [
     'video_library_id' => env('BUNNY_CDN_VIDEO_LIBRARY_ID', ''),
     'video_api_key' => env('BUNNY_CDN_VIDEO_API_KEY', ''),
     
-    // Stream settings
-    'stream_hostname' => env('BUNNY_CDN_STREAM_HOSTNAME', 'iframe.mediadelivery.net'),
+    // Player embed and Stream Pull Zone are different Bunny hosts.
+    'embed_hostname' => env('BUNNY_CDN_EMBED_HOSTNAME', 'iframe.mediadelivery.net'),
+    'stream_hostname' => env('BUNNY_CDN_STREAM_HOSTNAME', ''),
     
     // Upload settings
     'max_file_size' => 1073741824, // 1GB in bytes
