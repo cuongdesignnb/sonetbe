@@ -93,7 +93,7 @@ class PaymentController extends Controller
                 return response()->json(['message' => 'Mã giảm giá không tồn tại'], 400);
             }
 
-            $voucherError = $voucher->getValidationError($originalPrice, $user->id, $course->id);
+            $voucherError = $voucher->getValidationError($originalPrice, $user->id, $course->id, $section?->id);
             if ($voucherError) {
                 return response()->json(['message' => $voucherError], 400);
             }
@@ -111,7 +111,7 @@ class PaymentController extends Controller
                     if ($voucher) {
                         $voucher = Voucher::whereKey($voucher->id)->lockForUpdate()->first();
                         $voucherError = $voucher
-                            ? $voucher->getValidationError($originalPrice, $user->id, $course->id)
+                            ? $voucher->getValidationError($originalPrice, $user->id, $course->id, $section?->id)
                             : 'Mã giảm giá không tồn tại';
                         if ($voucherError) {
                             return response()->json(['message' => $voucherError], 400);

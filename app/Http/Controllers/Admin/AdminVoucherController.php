@@ -38,7 +38,7 @@ class AdminVoucherController extends Controller
             $query->where('status', $request->status);
         }
 
-        return response()->json($query->with('courses:id,title')->paginate(20));
+        return response()->json($query->with($this->targetRelations())->paginate(20));
     }
 
     public function show($id)
@@ -46,7 +46,7 @@ class AdminVoucherController extends Controller
         $this->ensureAdmin();
 
         $voucher = Voucher::withCount('usages')->findOrFail($id);
-        $voucher->load('courses:id,title');
+        $voucher->load($this->targetRelations());
 
         return response()->json(['voucher' => $voucher]);
     }
@@ -70,9 +70,11 @@ class AdminVoucherController extends Controller
             'valid_from' => 'nullable|date',
             'valid_until' => 'nullable|date|after_or_equal:valid_from',
             'status' => 'nullable|in:active,inactive',
-            'applicable_type' => 'nullable|in:all,specific',
+            'applicable_type' => 'nullable|in:all,specific,sections',
             'course_ids' => 'nullable|array',
             'course_ids.*' => 'integer|exists:courses,id',
+            'section_ids' => 'nullable|array|required_if:applicable_type,sections',
+            'section_ids.*' => 'integer|exists:course_sections,id',
         ], self::VALIDATION_MESSAGES, self::VALIDATION_ATTRIBUTES);
 
         if ($validator->fails()) {
@@ -101,12 +103,9 @@ class AdminVoucherController extends Controller
 
         $voucher = Voucher::create($data);
 
-        // Sync course targeting
-        if (($data['applicable_type'] ?? 'all') === 'specific' && !empty($request->course_ids)) {
-            $voucher->courses()->sync($request->course_ids);
-        }
+        $this->syncTargets($voucher, $request, $data['applicable_type'] ?? 'all');
 
-        $voucher->load('courses:id,title');
+        $voucher->load($this->targetRelations());
 
         return response()->json([
             'message' => 'Tạo voucher thành công',
@@ -135,9 +134,11 @@ class AdminVoucherController extends Controller
             'valid_from' => 'nullable|date',
             'valid_until' => 'nullable|date|after_or_equal:valid_from',
             'status' => 'nullable|in:active,inactive,expired',
-            'applicable_type' => 'nullable|in:all,specific',
+            'applicable_type' => 'nullable|in:all,specific,sections',
             'course_ids' => 'nullable|array',
             'course_ids.*' => 'integer|exists:courses,id',
+            'section_ids' => 'nullable|array|required_if:applicable_type,sections',
+            'section_ids.*' => 'integer|exists:course_sections,id',
         ], self::VALIDATION_MESSAGES, self::VALIDATION_ATTRIBUTES);
 
         if ($validator->fails()) {
@@ -160,14 +161,9 @@ class AdminVoucherController extends Controller
 
         $voucher->update($data);
 
-        // Sync course targeting
-        if (($data['applicable_type'] ?? $voucher->applicable_type) === 'specific' && $request->has('course_ids')) {
-            $voucher->courses()->sync($request->course_ids ?? []);
-        } elseif (($data['applicable_type'] ?? null) === 'all') {
-            $voucher->courses()->detach();
-        }
+        $this->syncTargets($voucher, $request, $data['applicable_type'] ?? $voucher->applicable_type);
 
-        $voucher->load('courses:id,title');
+        $voucher->load($this->targetRelations());
 
         return response()->json([
             'message' => 'Cập nhật voucher thành công',
@@ -243,6 +239,7 @@ class AdminVoucherController extends Controller
         'in' => ':attribute không hợp lệ.',
         'exists' => ':attribute không tồn tại.',
         'regex' => ':attribute chỉ được gồm chữ không dấu, số, dấu gạch ngang hoặc gạch dưới.',
+        'section_ids.required_if' => 'Vui lòng chọn ít nhất một chương áp dụng.',
     ];
 
     private const VALIDATION_ATTRIBUTES = [
@@ -260,7 +257,39 @@ class AdminVoucherController extends Controller
         'applicable_type' => 'Phạm vi áp dụng',
         'course_ids' => 'Khóa học áp dụng',
         'course_ids.*' => 'Khóa học áp dụng',
+        'section_ids' => 'Chương áp dụng',
+        'section_ids.*' => 'Chương áp dụng',
     ];
+
+    /** Courses / chapters a voucher targets, with each chapter's course title. */
+    private function targetRelations(): array
+    {
+        return [
+            'courses:id,title',
+            'sections' => fn ($q) => $q
+                ->select('course_sections.id', 'course_sections.title', 'course_sections.course_id')
+                ->with('course:id,title'),
+        ];
+    }
+
+    /** Keep only the targets matching the chosen scope. */
+    private function syncTargets(Voucher $voucher, Request $request, string $type): void
+    {
+        if ($type === 'specific') {
+            if ($request->has('course_ids')) {
+                $voucher->courses()->sync($request->input('course_ids') ?? []);
+            }
+            $voucher->sections()->detach();
+        } elseif ($type === 'sections') {
+            if ($request->has('section_ids')) {
+                $voucher->sections()->sync($request->input('section_ids') ?? []);
+            }
+            $voucher->courses()->detach();
+        } else {
+            $voucher->courses()->detach();
+            $voucher->sections()->detach();
+        }
+    }
 
     /**
      * Codes are stored upper-case. Normalise before validating so the unique

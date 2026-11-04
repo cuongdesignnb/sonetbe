@@ -54,6 +54,13 @@ class Voucher extends Model
         return $this->belongsToMany(Course::class, 'voucher_courses')->withTimestamps();
     }
 
+    /** Chapters a "sections" voucher applies to. */
+    public function sections()
+    {
+        return $this->belongsToMany(CourseSection::class, 'voucher_sections', 'voucher_id', 'course_section_id')
+            ->withTimestamps();
+    }
+
     // Scopes
     public function scopeActive($query)
     {
@@ -127,11 +134,22 @@ class Voucher extends Model
 
     public function isApplicableToCourse(int $courseId): bool
     {
-        if ($this->applicable_type !== 'specific') {
-            return true; // 'all' type applies to everything
-        }
+        return $this->isApplicableTo($courseId, null);
+    }
 
-        return $this->courses()->where('courses.id', $courseId)->exists();
+    /**
+     * all      → every course and chapter
+     * specific → the selected courses (full course and their chapters)
+     * sections → only when buying one of the selected chapters on its own
+     */
+    public function isApplicableTo(int $courseId, ?int $sectionId): bool
+    {
+        return match ($this->applicable_type) {
+            'specific' => $this->courses()->where('courses.id', $courseId)->exists(),
+            'sections' => $sectionId !== null
+                && $this->sections()->where('course_sections.id', $sectionId)->exists(),
+            default => true,
+        };
     }
 
     public function calculateDiscount(float $amount): float
@@ -153,7 +171,7 @@ class Voucher extends Model
         return round($discount, 2);
     }
 
-    public function getValidationError(float $orderAmount, int $userId, ?int $courseId = null): ?string
+    public function getValidationError(float $orderAmount, int $userId, ?int $courseId = null, ?int $sectionId = null): ?string
     {
         if ($this->status !== 'active') {
             return 'Mã giảm giá không hoạt động';
@@ -184,8 +202,14 @@ class Voucher extends Model
             }
         }
 
-        // Check course applicability if courseId provided
-        if ($courseId !== null && !$this->isApplicableToCourse($courseId)) {
+        // Check course / chapter applicability if courseId provided
+        if ($courseId !== null && !$this->isApplicableTo($courseId, $sectionId)) {
+            if ($this->applicable_type === 'sections') {
+                $titles = $this->sections()->pluck('course_sections.title')->take(3)->implode(', ');
+                return $sectionId === null
+                    ? 'Mã giảm giá chỉ áp dụng khi mua lẻ chương: ' . $titles
+                    : 'Mã giảm giá không áp dụng cho chương này (chỉ áp dụng cho: ' . $titles . ')';
+            }
             return 'Mã giảm giá không áp dụng cho khóa học này';
         }
 

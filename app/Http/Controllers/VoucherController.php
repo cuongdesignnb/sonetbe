@@ -70,7 +70,7 @@ class VoucherController extends Controller
         } else {
             $orderAmount = $tier ? (float) $tier->price : (float) $course->price;
         }
-        $error = $voucher->getValidationError($orderAmount, $user->id, $course->id);
+        $error = $voucher->getValidationError($orderAmount, $user->id, $course->id, $section?->id);
 
         if ($error) {
             return response()->json([

@@ -218,8 +218,9 @@ export type Voucher = {
   valid_from?: string | null;
   valid_until?: string | null;
   status: "active" | "inactive" | "expired";
-  applicable_type?: "all" | "specific";
+  applicable_type?: "all" | "specific" | "sections";
   courses?: { id: number; title: string }[];
+  sections?: { id: number; title: string; course_id: number; course?: { id: number; title: string } | null }[];
   created_at?: string;
   updated_at?: string;
   usages_count?: number;

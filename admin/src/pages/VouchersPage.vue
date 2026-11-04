@@ -106,6 +106,16 @@
                   {{ c.title.length > 20 ? c.title.slice(0, 20) + '…' : c.title }}
                 </span>
               </span>
+              <span v-else-if="v.applicable_type === 'sections' && v.sections?.length" class="course-badges">
+                <span
+                  v-for="sec in v.sections"
+                  :key="sec.id"
+                  class="badge badge-section"
+                  :title="`${sec.title} — ${sec.course?.title || ''}`"
+                >
+                  Chương: {{ sec.title.length > 18 ? sec.title.slice(0, 18) + '…' : sec.title }}
+                </span>
+              </span>
               <span v-else class="badge badge-info">Tất cả</span>
             </td>
             <td>
@@ -319,6 +329,10 @@
                   <input type="radio" v-model="form.applicable_type" value="specific" />
                   <span>Khóa học cụ thể</span>
                 </label>
+                <label class="radio-label">
+                  <input type="radio" v-model="form.applicable_type" value="sections" />
+                  <span>Chương cụ thể</span>
+                </label>
               </div>
             </div>
 
@@ -359,6 +373,63 @@
                 >
                   {{ getCourseTitle(cid) }}
                   <button type="button" class="badge-remove" @click="form.course_ids = form.course_ids.filter(x => x !== cid)">×</button>
+                </span>
+              </div>
+            </div>
+
+            <!-- Chapter selector -->
+            <div v-if="form.applicable_type === 'sections'" class="form-group">
+              <label class="label">Chọn chương áp dụng</label>
+              <small class="muted" style="display: block; margin-bottom: 6px">
+                Voucher chỉ dùng được khi học viên mua lẻ đúng chương đã chọn
+                (không áp dụng khi mua toàn khoá).
+              </small>
+              <select
+                v-model.number="sectionCourseId"
+                class="input"
+                style="margin-bottom: 8px"
+                @change="loadCourseSections"
+              >
+                <option :value="0" disabled>-- Chọn khóa học để xem các chương --</option>
+                <option v-for="c in allCourses" :key="c.id" :value="c.id">{{ c.title }}</option>
+              </select>
+              <div v-if="sectionCourseId" class="course-list">
+                <div v-if="sectionsLoading" class="muted" style="padding: 8px; text-align: center">
+                  Đang tải chương…
+                </div>
+                <template v-else>
+                  <label
+                    v-for="sec in courseSections"
+                    :key="sec.id"
+                    class="course-option"
+                    :class="{ selected: form.section_ids.includes(sec.id) }"
+                  >
+                    <input
+                      type="checkbox"
+                      :value="sec.id"
+                      v-model="form.section_ids"
+                      @change="rememberSection(sec)"
+                    />
+                    <span>
+                      {{ sec.title }}
+                      <span class="muted">
+                        · {{ sec.is_sellable ? formatCurrency(sec.price ?? 0) : "chưa bật bán lẻ" }}
+                      </span>
+                    </span>
+                  </label>
+                  <div v-if="courseSections.length === 0" class="muted" style="padding: 8px; text-align: center">
+                    Khóa học này chưa có chương
+                  </div>
+                </template>
+              </div>
+              <div v-if="form.section_ids.length" class="selected-courses">
+                <span v-for="sid in form.section_ids" :key="sid" class="badge badge-section">
+                  {{ sectionLabels[sid] || `Chương #${sid}` }}
+                  <button
+                    type="button"
+                    class="badge-remove"
+                    @click="form.section_ids = form.section_ids.filter((x) => x !== sid)"
+                  >×</button>
                 </span>
               </div>
             </div>
@@ -471,9 +542,42 @@ const form = ref({
   valid_from: "",
   valid_until: "",
   status: "active",
-  applicable_type: "all" as "all" | "specific",
+  applicable_type: "all" as "all" | "specific" | "sections",
   course_ids: [] as number[],
+  section_ids: [] as number[],
 });
+
+type SectionOption = {
+  id: number;
+  title: string;
+  price?: string | number | null;
+  is_sellable?: boolean;
+};
+const sectionCourseId = ref(0);
+const courseSections = ref<SectionOption[]>([]);
+const sectionsLoading = ref(false);
+// "Chương 2 (Khoá ABC)" labels for the selected-chapter badges.
+const sectionLabels = ref<Record<number, string>>({});
+
+async function loadCourseSections() {
+  courseSections.value = [];
+  if (!sectionCourseId.value) return;
+  sectionsLoading.value = true;
+  try {
+    const res = await apiFetch<{ sections: SectionOption[] }>(
+      `/api/admin/courses/${sectionCourseId.value}/sections`,
+    );
+    courseSections.value = res.sections || [];
+  } catch {
+    courseSections.value = [];
+  } finally {
+    sectionsLoading.value = false;
+  }
+}
+
+function rememberSection(sec: SectionOption) {
+  sectionLabels.value[sec.id] = `${sec.title} (${getCourseTitle(sectionCourseId.value)})`;
+}
 
 
 const filteredCourses = computed(() => {
@@ -629,8 +733,12 @@ function resetForm() {
     status: "active",
     applicable_type: "all",
     course_ids: [],
+    section_ids: [],
   };
   courseSearch.value = "";
+  sectionCourseId.value = 0;
+  courseSections.value = [];
+  sectionLabels.value = {};
   formError.value = null;
 }
 
@@ -657,8 +765,15 @@ function openEdit(voucher: Voucher) {
     status: voucher.status,
     applicable_type: voucher.applicable_type || "all",
     course_ids: voucher.courses?.map((c) => c.id) || [],
+    section_ids: voucher.sections?.map((sec) => sec.id) || [],
   };
   courseSearch.value = "";
+  sectionLabels.value = Object.fromEntries(
+    (voucher.sections || []).map((sec) => [sec.id, `${sec.title} (${sec.course?.title || ""})`]),
+  );
+  sectionCourseId.value = voucher.sections?.[0]?.course_id || 0;
+  courseSections.value = [];
+  if (sectionCourseId.value) loadCourseSections();
   formError.value = null;
   showModal.value = true;
 }
@@ -680,6 +795,7 @@ async function saveVoucher() {
       valid_from: toIsoInstant(form.value.valid_from),
       valid_until: toIsoInstant(form.value.valid_until),
       course_ids: form.value.applicable_type === 'specific' ? form.value.course_ids : [],
+      section_ids: form.value.applicable_type === 'sections' ? form.value.section_ids : [],
     };
 
     if (editingVoucher.value) {
@@ -952,6 +1068,19 @@ onMounted(() => {
   background: #f0fdf4;
   color: #15803d;
   border: 1px solid #bbf7d0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.badge-section {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
   display: inline-flex;
   align-items: center;
   gap: 4px;
